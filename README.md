@@ -13,6 +13,6 @@ python --version
 - python -m desktop
 
 
-Idea by 고정우
-Coding by 고정우, Cursor
-UI design by 조원준
+- Idea by 고정우
+- Coding by 고정우, Cursor
+- UI design by 조원준
