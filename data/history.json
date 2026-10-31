@@ -1,0 +1,31 @@
+{
+  "records": [
+    {
+      "entries": [
+        {
+          "rank": 1,
+          "rc_id": "RC-00",
+          "name": "홍길동",
+          "student_id": "20101",
+          "laps": [
+            "00:01:100",
+            "00:01:200"
+          ],
+          "total": "00:02:300",
+          "penalty_ms": 0
+        },
+        {
+          "rank": 2,
+          "rc_id": "RC-01",
+          "name": "김철수",
+          "student_id": "20102",
+          "laps": [
+            "00:01:500"
+          ],
+          "total": "00:01:500",
+          "penalty_ms": 0
+        }
+      ]
+    }
+  ]
+}

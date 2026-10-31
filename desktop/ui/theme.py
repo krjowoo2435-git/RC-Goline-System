@@ -1,0 +1,28 @@
+"""RCGLS 모니터 테마 — Figma 메인모니터 회색 톤."""
+
+BG = "#D1D5DB"
+PANEL = "#9CA3AF"
+PANEL_DARK = "#4B5563"
+PANEL_ALT = "#E5E7EB"
+BORDER = "#6B7280"
+HEADER_BG = "#111827"
+HEADER_FG = "#F9FAFB"
+BTN = "#4B5563"
+BTN_FG = "#FFFFFF"
+BTN_ACTIVE = "#374151"
+ACCENT = "#C0392B"
+ACCENT_SOFT = "#E74C3C"
+OK = "#166534"
+WARN = "#B9770E"
+TEXT = "#111827"
+MUTED = "#374151"
+LED_OFF = "#374151"
+LED_ON = "#EF4444"
+BUZZER_ON = "#F59E0B"
+INPUT_BG = "#6B7280"
+INPUT_FG = "#FFFFFF"
+FONT_UI = ("Segoe UI", 11)
+FONT_TITLE = ("Segoe UI Semibold", 20)
+FONT_MONO = ("Consolas", 12)
+FONT_RANK = ("Segoe UI Semibold", 12)
+FONT_BTN = ("Segoe UI Semibold", 13)
