@@ -19,8 +19,8 @@ ArCuo마크의 중앙이 골라인을 통과 → 진행중인 랩과 랩 타임�
 모든 차량이 마지막 랩 종료 → 랩타임을 CSV에 기록(ID, Student_num, name, 1lap_time, 2lap_time, 3lap_time)
 
 
-idea by 고정우
-
+Idea by 고정우
+UI design by 조원준
 
 
 환경 설치 명령어
