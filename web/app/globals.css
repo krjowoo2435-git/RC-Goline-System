@@ -232,6 +232,23 @@ body {
   outline-offset: -2px;
 }
 
-.records-table tbody tr:nth-child(even):not(.is-active) {
+.records-table tbody tr.is-erased {
+  color: #fecaca;
+  background: rgba(220, 38, 38, 0.18);
+}
+
+.records-table tbody tr.is-erased td {
+  text-decoration: line-through;
+  text-decoration-color: rgba(254, 202, 202, 0.7);
+}
+
+.records-table tbody tr.is-erased td:first-child,
+.records-table tbody tr.is-erased td:last-child {
+  text-decoration: none;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.records-table tbody tr:nth-child(even):not(.is-active):not(.is-erased) {
   background: rgba(255, 255, 255, 0.04);
 }

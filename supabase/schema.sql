@@ -13,8 +13,10 @@ create table if not exists public.race_records (
   total text not null default '--:--:---',
   total_ms integer not null default 0,
   penalty_ms double precision not null default 0,
+  disqualified boolean not null default false,
   updated_at timestamptz not null default now(),
-  constraint race_records_student_id_key unique (student_id)
+  -- 학번+이름으로 동일 선수 판별 (성적 저하 시 미갱신)
+  constraint race_records_student_name_key unique (student_id, name)
 );
 
 create index if not exists race_records_rank_idx
@@ -32,28 +34,13 @@ create policy "Anyone can read race_records"
   to anon, authenticated
   using (true);
 
--- 경기장 키오스크용: 데스크톱/웹 API가 publishable key 로 업로드
--- (서비스 롤 키 없이 동작). 공개 배포 시 서비스 롤 + UPLOAD_SECRET 로 강화하세요.
+-- 쓰기는 웹 API(서비스 롤 권장) + RCGLS_UPLOAD_SECRET 으로만 허용하세요.
+-- anon 직접 insert/update/delete 는 공개 배포에서 위험하므로 기본 비활성.
 drop policy if exists "Anyone can insert race_records" on public.race_records;
-create policy "Anyone can insert race_records"
-  on public.race_records
-  for insert
-  to anon, authenticated
-  with check (true);
-
 drop policy if exists "Anyone can update race_records" on public.race_records;
-create policy "Anyone can update race_records"
-  on public.race_records
-  for update
-  to anon, authenticated
-  using (true)
-  with check (true);
-
 drop policy if exists "Anyone can delete race_records" on public.race_records;
-create policy "Anyone can delete race_records"
-  on public.race_records
-  for delete
-  to anon, authenticated
-  using (true);
+
+-- 로컬/키오스크에서 publishable(anon) 키로 직접 쓸 때만 아래를 다시 활성화하세요.
+-- create policy "Anyone can insert race_records" ...
 
 notify pgrst, 'reload schema';

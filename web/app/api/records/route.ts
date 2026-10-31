@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import {
+  clearAllRecordsStore,
   isSupabaseConfigured,
   normalizeRecord,
   readRecords,
@@ -11,9 +12,14 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 function authorizeUpload(request: Request): boolean {
-  const expected = process.env.RCGLS_UPLOAD_SECRET;
-  if (!expected) return true; // 시크릿 미설정 시 허용 (로컬/경기장)
+  const expected = process.env.RCGLS_UPLOAD_SECRET?.trim();
   const got = request.headers.get("x-rcgls-upload-secret") || "";
+  // 배포(Vercel/production)에서는 시크릿 필수 — 미설정 시 POST 거부
+  const isProd =
+    process.env.VERCEL === "1" || process.env.NODE_ENV === "production";
+  if (!expected) {
+    return !isProd;
+  }
   return got === expected;
 }
 
@@ -54,5 +60,20 @@ export async function POST(request: Request) {
     source: saved.source,
     path: saved.path,
     records: saved.records,
+  });
+}
+
+export async function DELETE(request: Request) {
+  if (!authorizeUpload(request)) {
+    return NextResponse.json({ error: "초기화 권한이 없습니다." }, { status: 401 });
+  }
+
+  const cleared = await clearAllRecordsStore();
+  return NextResponse.json({
+    ok: true,
+    count: 0,
+    source: cleared.source,
+    path: cleared.path,
+    records: [],
   });
 }

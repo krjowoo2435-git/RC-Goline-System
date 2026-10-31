@@ -8,8 +8,12 @@ from typing import Callable, Optional
 
 from .hardware import HardwareController
 from .models import Participant, RacePhase, RankRow, RunnerResult
-from .storage import append_race_results, participant_by_marker
-
+from .storage import (
+    append_race_results,
+    force_update_record,
+    mark_record_erased,
+    participant_by_marker,
+)
 
 StatusCallback = Callable[[str], None]
 PhaseCallback = Callable[[RacePhase], None]
@@ -27,6 +31,8 @@ class RaceConfig:
     max_runners: int = 3
     # 결승선 통과 후 해당 RC-ID 재기록 중단 (역주행/정체 중복 방지)
     pass_cooldown_s: float = 7.0
+    # 초음파 랩/부정출발 계측 (기본 OFF — 가상 결승선만 쓸 때)
+    ultrasonic_enabled: bool = False
 
 
 @dataclass
@@ -43,6 +49,7 @@ class RaceEngine:
     start_monotonic: Optional[float] = field(default=None, init=False)
     _worker: Optional[threading.Thread] = field(default=None, init=False)
     _stop: bool = field(default=False, init=False)
+    _finish_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _marker_to_rc: dict[int, str] = field(default_factory=dict, init=False)
     _pending_markers: dict[int, float] = field(default_factory=dict, init=False)
@@ -62,6 +69,11 @@ class RaceEngine:
 
     def set_lap_count(self, laps: int) -> None:
         self.config.lap_count = max(1, min(10, int(laps)))
+
+    def set_ultrasonic_enabled(self, enabled: bool) -> None:
+        self.config.ultrasonic_enabled = bool(enabled)
+        state = "ON" if self.config.ultrasonic_enabled else "OFF"
+        self._emit_status(f"초음파 계측: {state}")
 
     def _emit_status(self, message: str) -> None:
         if self.on_status:
@@ -149,10 +161,11 @@ class RaceEngine:
             return out
 
     def add_manual_penalty(self, rc_id: str, seconds: float) -> bool:
-        """수동 시간 추가 (초)."""
+        """수동 시간 추가 (초). 종료 후에는 로컬 기록도 강제 갱신."""
         if seconds <= 0:
             self._emit_status("패널티 시간은 0보다 커야 합니다.")
             return False
+        persist_row: Optional[RankRow] = None
         with self._lock:
             result = self.results.get(rc_id)
             if result is None:
@@ -169,14 +182,36 @@ class RaceEngine:
             result.penalty_ms += add_ms
             name = result.participant.name
             total_penalty = result.penalty_ms
+            # 종료 후·완주 기록이 있으면 저장 대상 구성 (lock 밖에서 I/O)
+            if self.phase == RacePhase.FINISHED and result.total_ms is not None:
+                persist_row = RankRow(
+                    rank=1,
+                    rc_id=result.participant.rc_id,
+                    name=result.participant.name,
+                    student_id=result.participant.student_id,
+                    lap_labels=[
+                        result.format_lap(j) for j in range(self.config.lap_count)
+                    ],
+                    total_label=result.format_total(),
+                    penalty_ms=result.penalty_ms,
+                )
         self._emit_status(
             f"수동 패널티: {name}(+{seconds:g}초) → 누적 패널티 {total_penalty / 1000:g}초"
         )
+        if persist_row is not None:
+            try:
+                force_update_record(persist_row)
+                self._emit_status(
+                    f"종료 후 패널티 로컬 반영: {persist_row.name} {persist_row.total_label} "
+                    "(웹 반영은 [web에 기록 업로드])"
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._emit_status(f"패널티는 적용됐으나 로컬 저장 실패: {exc}")
         self._publish_ranks()
         return True
 
     def disqualify(self, rc_id: str) -> bool:
-        """탈락(기록말소형) — 랩/패널티 기록 삭제."""
+        """탈락(기록말소형) — 랩/패널티 기록 삭제 + 전체기록에 말소 저장."""
         with self._lock:
             result = self.results.get(rc_id)
             if result is None:
@@ -192,9 +227,26 @@ class RaceEngine:
             result.finished = False
             result.false_start = False
             name = result.participant.name
-        self._emit_status(f"탈락(기록말소): {name} ({rc_id})")
+            student_id = result.participant.student_id
+        try:
+            mark_record_erased(student_id, name, rc_id=rc_id)
+            self._emit_status(
+                f"탈락(기록말소): {name} ({student_id}) — 로컬 저장됨. "
+                "웹 반영은 [web에 기록 업로드]"
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._emit_status(f"탈락 처리됨이나 로컬 저장 실패: {exc}")
         self._publish_ranks()
         return True
+
+    def _join_worker(self, timeout: float = 2.0) -> None:
+        """이전 경기 워커가 남아 있으면 종료될 때까지 대기."""
+        worker = self._worker
+        if worker is not None and worker.is_alive():
+            if threading.current_thread() is not worker:
+                worker.join(timeout=timeout)
+        if worker is not None and not worker.is_alive():
+            self._worker = None
 
     def start_race(self, lap_count: int | None = None) -> None:
         if self.phase not in (RacePhase.IDLE, RacePhase.FINISHED):
@@ -204,24 +256,35 @@ class RaceEngine:
             self._emit_status("참가자가 없습니다. participants.json을 확인하세요.")
             return
 
+        # 중단 직후 재시작: 이전 워커가 살아 있으면 카운트다운/부저가 겹침
+        self._stop = True
+        self._join_worker()
+
         if lap_count is not None:
             self.set_lap_count(lap_count)
 
         target_laps = self.config.lap_count
+        max_n = max(1, int(self.config.max_runners))
+        registered = self.participants[:max_n]
+        skipped = len(self.participants) - len(registered)
+
         self._stop = False
         self.hardware.reset_triggers()
         with self._lock:
             self.results = {
-                p.rc_id: RunnerResult(participant=p) for p in self.participants[:3]
+                p.rc_id: RunnerResult(participant=p) for p in registered
             }
             self._pending_markers.clear()
             self._pass_cooldown_until.clear()
             self.start_monotonic = None
 
-        self._emit_status(
+        msg = (
             f"경기 준비 — 목표 {target_laps}랩 / 참가 {len(self.results)}명 "
             f"/ 통과 후 {self.config.pass_cooldown_s:.0f}초 재기록 금지"
         )
+        if skipped > 0:
+            msg += f" (레인 초과 {skipped}명 제외, 최대 {max_n}명)"
+        self._emit_status(msg)
         self._publish_ranks()
         self._worker = threading.Thread(target=self._run_sequence, daemon=True)
         self._worker.start()
@@ -229,6 +292,7 @@ class RaceEngine:
     def abort(self) -> None:
         self._stop = True
         self.hardware.all_leds_off()
+        self._join_worker()
         self._set_phase(RacePhase.IDLE)
         self._emit_status("경기가 중단되었습니다.")
 
@@ -274,7 +338,10 @@ class RaceEngine:
         self.start_monotonic = time.monotonic()
         self._set_phase(RacePhase.RACING)
         self.hardware.buzz(0.5)
-        self._emit_status("출발! 가상결승선·초음파·카메라 계측 중")
+        if self.config.ultrasonic_enabled:
+            self._emit_status("출발! 가상결승선·초음파·카메라 계측 중")
+        else:
+            self._emit_status("출발! 가상결승선·카메라 계측 중 (초음파 OFF)")
 
         # 경기 종료는 랩 완료 / 수동 종료로 처리
         while not self._stop and self.phase == RacePhase.RACING:
@@ -286,26 +353,51 @@ class RaceEngine:
     def _all_finished(self) -> bool:
         with self._lock:
             active = [r for r in self.results.values() if not r.disqualified]
+            # 전원 탈락이면 계측 대상이 없으므로 종료
             if not active:
-                return False
+                return bool(self.results)
             return all(len(r.lap_times_ms) >= self.config.lap_count for r in active)
 
     def _finish(self) -> None:
-        self._set_phase(RacePhase.FINISHED)
-        rows = [r for r in self.ranked_rows() if r.rank > 0]
+        with self._finish_lock:
+            if self.phase == RacePhase.FINISHED:
+                return
+            self._set_phase(RacePhase.FINISHED)
+        # 완주자 + 말소(DQ) 모두 저장 대상
+        rows = [
+            r
+            for r in self.ranked_rows()
+            if (r.rank > 0 and not r.disqualified) or r.disqualified
+        ]
+        overall_count = 0
+        accepted = 0
+        skipped = 0
+        save_error = ""
         if rows:
-            # 전체 기록: JSON + CSV 병렬 저장 (웹 연동용)
-            append_race_results(rows)
+            try:
+                overall, accepted, skipped = append_race_results(rows)
+                overall_count = len(overall)
+            except Exception as exc:  # noqa: BLE001
+                save_error = str(exc)
         self._publish_ranks()
-        self._emit_status(
-            "게임 종료 — 순위 확정, 전체 기록 JSON/CSV 저장 완료"
-        )
+        if save_error:
+            self._emit_status(f"게임 종료 — 로컬 저장 실패: {save_error}")
+        elif not rows:
+            self._emit_status("게임 종료 — 완주 기록이 없어 로컬 저장을 건너뛰었습니다.")
+        else:
+            self._emit_status(
+                f"게임 종료 — 순위 확정 (갱신/신규 {accepted}, 미갱신 {skipped}, 전체 {overall_count}건). "
+                "학번+이름 기준 · 전기록보다 좋지 않으면 미갱신. "
+                "필요 시 [web에 기록 업로드]를 누르세요."
+            )
 
     def force_finish(self) -> None:
         if self.phase == RacePhase.RACING:
             self._finish()
 
     def _on_ultrasonic_pass(self, sensor_index: int, _distance: float) -> None:
+        if not self.config.ultrasonic_enabled:
+            return
         now = time.monotonic()
         phase = self.phase
 
@@ -325,20 +417,28 @@ class RaceEngine:
             if sensor_index < len(ordered):
                 target = ordered[sensor_index]
 
-            # 카메라 ArUco가 최근 인식되면 해당 참가자로 재대응
-            if self._pending_markers:
-                marker_id, ts = max(self._pending_markers.items(), key=lambda x: x[1])
-                if now - ts < 2.0:
-                    rc_id = self._marker_to_rc.get(marker_id)
-                    if rc_id and rc_id in self.results:
-                        target = self.results[rc_id]
-                        self._pending_markers.pop(marker_id, None)
+            # ArUco 재매핑: 최근 2초 내 마커가 "하나뿐"일 때만 (다른 차 오기록 방지)
+            recent = [
+                (mid, ts)
+                for mid, ts in self._pending_markers.items()
+                if now - ts < 2.0
+            ]
+            if len(recent) == 1:
+                marker_id, _ = recent[0]
+                rc_id = self._marker_to_rc.get(marker_id)
+                if rc_id and rc_id in self.results:
+                    target = self.results[rc_id]
+                    self._pending_markers.pop(marker_id, None)
 
             if target is None:
                 return
             self._record_lap_locked(target, elapsed_ms, now, source="초음파")
 
         self._publish_ranks()
+
+    def _false_start_seconds_label(self) -> str:
+        sec = self.config.false_start_penalty_ms / 1000.0
+        return f"{sec:g}"
 
     def _apply_false_start_penalty(self, sensor_index: int) -> None:
         with self._lock:
@@ -352,7 +452,9 @@ class RaceEngine:
             result.false_start = True
             result.penalty_ms += self.config.false_start_penalty_ms
             name = result.participant.name
-        self._emit_status(f"부정출발: {name} +3초 패널티")
+        self._emit_status(
+            f"부정출발: {name} +{self._false_start_seconds_label()}초 패널티"
+        )
         self._publish_ranks()
 
     def on_marker_seen(self, marker_id: int) -> None:
@@ -397,7 +499,9 @@ class RaceEngine:
                 result.false_start = True
                 result.penalty_ms += self.config.false_start_penalty_ms
                 name = result.participant.name
-            self._emit_status(f"부정출발: {name} +3초 패널티")
+            self._emit_status(
+                f"부정출발: {name} +{self._false_start_seconds_label()}초 패널티"
+            )
             self._publish_ranks()
             return
 

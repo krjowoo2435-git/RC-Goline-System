@@ -29,6 +29,7 @@ RECORD_CSV_FIELDS = [
     "total",
     "total_ms",
     "penalty_ms",
+    "disqualified",
 ]
 
 
@@ -36,19 +37,36 @@ def _ensure_data_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _read_json_object(path: Path) -> dict[str, Any] | list[Any] | None:
+    """빈 파일·깨진 JSON은 None (예외 대신)."""
+    if not path.exists():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not text:
+        return None
+    try:
+        raw = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return raw
+
+
 # ----- 참가자 (JSON + CSV 병렬) -----
 
 
 def load_participants(path: Path | None = None) -> list[Participant]:
     target = path or PARTICIPANTS_JSON
-    if not target.exists():
-        # CSV만 있는 경우 복구
+    raw = _read_json_object(target)
+    if raw is None:
         if PARTICIPANTS_CSV.exists():
             return _load_participants_csv(PARTICIPANTS_CSV)
         return []
-    with target.open(encoding="utf-8") as f:
-        raw = json.load(f)
     items = raw.get("participants", []) if isinstance(raw, dict) else raw
+    if not isinstance(items, list):
+        return []
     return [Participant.from_dict(item) for item in items]
 
 
@@ -104,16 +122,21 @@ def save_participants(
 
 def load_overall_records(path: Path | None = None) -> list[dict[str, Any]]:
     target = path or RECORDS_JSON
-    if not target.exists():
-        # 구 history.json 마이그레이션 시도
-        if HISTORY_PATH.exists():
-            return _migrate_history_to_overall()
-        if RECORDS_CSV.exists():
-            return _load_records_csv(RECORDS_CSV)
-        return []
-    with target.open(encoding="utf-8") as f:
-        raw = json.load(f)
-    return list(raw.get("records", []))
+    raw = _read_json_object(target)
+    if isinstance(raw, dict):
+        return _sort_overall(list(raw.get("records") or []))
+    if isinstance(raw, list):
+        return _sort_overall(list(raw))
+
+    # JSON 없음/빈파일/깨짐 → CSV 또는 history 폴백
+    if RECORDS_CSV.exists() and RECORDS_CSV.stat().st_size > 0:
+        rows = _load_records_csv(RECORDS_CSV)
+        if rows:
+            return _sort_overall(rows)
+    hist = _read_json_object(HISTORY_PATH)
+    if hist is not None:
+        return _migrate_history_to_overall()
+    return []
 
 
 def _load_records_csv(path: Path) -> list[dict[str, Any]]:
@@ -122,6 +145,7 @@ def _load_records_csv(path: Path) -> list[dict[str, Any]]:
         reader = csv.DictReader(f)
         for row in reader:
             laps = [row.get("lap1", ""), row.get("lap2", ""), row.get("lap3", "")]
+            dq_raw = str(row.get("disqualified", "")).strip().lower()
             rows.append(
                 {
                     "rank": int(row.get("rank") or 0),
@@ -132,6 +156,7 @@ def _load_records_csv(path: Path) -> list[dict[str, Any]]:
                     "total": row.get("total", ""),
                     "total_ms": int(float(row.get("total_ms") or 0)),
                     "penalty_ms": float(row.get("penalty_ms") or 0),
+                    "disqualified": dq_raw in ("1", "true", "yes", "dq", "말소"),
                 }
             )
     return rows
@@ -171,12 +196,82 @@ def _parse_total_ms(label: str) -> int:
         return 0
 
 
+def _record_identity_key(student_id: str, name: str) -> str:
+    """기록 식별: 학번 + 이름 (공백 무시, 대소문자 무시)."""
+    sid = str(student_id or "").strip().casefold()
+    nm = str(name or "").strip().casefold()
+    return f"{sid}\0{nm}"
+
+
+def _normalize_record_row(raw: dict[str, Any]) -> dict[str, Any] | None:
+    row = dict(raw)
+    sid = str(row.get("student_id") or "").strip()
+    name = str(row.get("name") or "").strip()
+    if not sid or not name:
+        return None
+    dq = bool(row.get("disqualified"))
+    if dq:
+        total_ms = 10**12 - 1
+        total = "말소"
+        laps = ["말소", "말소", "말소"]
+    else:
+        total_ms = int(row.get("total_ms") or _parse_total_ms(str(row.get("total") or "")))
+        total = str(row.get("total") or "--:--:---")
+        laps = list(row.get("laps") or [])
+        while len(laps) < 3:
+            laps.append("--:--:---")
+        laps = laps[:3]
+    row.update(
+        {
+            "student_id": sid,
+            "name": name,
+            "rc_id": str(row.get("rc_id") or ""),
+            "total_ms": total_ms,
+            "total": total,
+            "laps": laps,
+            "penalty_ms": float(row.get("penalty_ms") or 0),
+            "disqualified": dq,
+        }
+    )
+    return row
+
+
+def _merge_best_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """학번+이름 기준. 말소는 즉시 반영, 정상 기록은 더 빠를 때만 갱신."""
+    best: dict[str, dict[str, Any]] = {}
+    for raw in records:
+        row = _normalize_record_row(raw if isinstance(raw, dict) else {})
+        if row is None:
+            continue
+        key = _record_identity_key(row["student_id"], row["name"])
+        prev = best.get(key)
+        if row["disqualified"]:
+            # 기록 말소 — 기존 성적 덮어씀
+            best[key] = row
+            continue
+        if prev is None:
+            best[key] = row
+            continue
+        if prev.get("disqualified"):
+            # 말소 후 재경기 정상 기록 → 복구
+            best[key] = row
+            continue
+        if int(row["total_ms"]) < int(prev.get("total_ms") or 10**12):
+            best[key] = row
+    return list(best.values())
+
+
 def _sort_overall(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """total 기준 오름차순(빠른 순) → rank 1,2,3…"""
-    ordered = sorted(records, key=lambda r: int(r.get("total_ms") or 10**12))
+    """정상 기록 빠른 순 순위 → 말소는 맨 뒤(rank=0)."""
+    merged = _merge_best_records(records)
+    active = [r for r in merged if not r.get("disqualified")]
+    erased = [r for r in merged if r.get("disqualified")]
+    ordered = sorted(active, key=lambda r: int(r.get("total_ms") or 10**12))
     for i, row in enumerate(ordered, start=1):
         row["rank"] = i
-    return ordered
+    for row in erased:
+        row["rank"] = 0
+    return ordered + erased
 
 
 def save_overall_records(
@@ -212,46 +307,180 @@ def save_overall_records(
                     "total": row.get("total", ""),
                     "total_ms": row.get("total_ms", 0),
                     "penalty_ms": row.get("penalty_ms", 0),
+                    "disqualified": "1" if row.get("disqualified") else "0",
                 }
             )
 
 
-def append_race_results(rows: list[RankRow]) -> list[dict[str, Any]]:
+def append_race_results(
+    rows: list[RankRow],
+) -> tuple[list[dict[str, Any]], int, int]:
     """
-    게임 종료 시 전체 기록에 추가하고 JSON+CSV로 병렬 저장.
-    흐름: 이름·학번·토탈을 전체 기록에 넣고 total 기준 재정렬.
+    게임 종료 시 전체 기록에 반영하고 JSON+CSV로 병렬 저장.
+    식별: 학번+이름. 기존보다 성적이 나쁘거나 같으면 갱신하지 않음.
+
+    Returns:
+        (전체기록, 갱신/신규 수, 미갱신(성적 저하·동일) 수)
     """
     overall = load_overall_records()
+    existing = {
+        _record_identity_key(str(r.get("student_id", "")), str(r.get("name", ""))): r
+        for r in overall
+    }
+    accepted = 0
+    skipped = 0
     for row in rows:
+        sid = str(row.student_id or "").strip()
+        name = str(row.name or "").strip()
+        if not sid or not name:
+            continue
+        if row.disqualified:
+            overall.append(
+                {
+                    "rank": 0,
+                    "rc_id": row.rc_id,
+                    "student_id": sid,
+                    "name": name,
+                    "laps": ["말소", "말소", "말소"],
+                    "total": "말소",
+                    "total_ms": 10**12 - 1,
+                    "penalty_ms": 0,
+                    "disqualified": True,
+                }
+            )
+            accepted += 1
+            continue
         if row.rank <= 0:
             continue
         total_ms = _parse_total_ms(row.total_label)
+        if total_ms <= 0 and not row.total_label:
+            continue
+        key = _record_identity_key(sid, name)
+        prev = existing.get(key)
+        if (
+            prev is not None
+            and not prev.get("disqualified")
+            and total_ms >= int(prev.get("total_ms") or 10**12)
+        ):
+            skipped += 1
+            continue
         overall.append(
             {
                 "rank": 0,
                 "rc_id": row.rc_id,
-                "student_id": row.student_id,
-                "name": row.name,
+                "student_id": sid,
+                "name": name,
                 "laps": list(row.lap_labels),
                 "total": row.total_label,
                 "total_ms": total_ms,
                 "penalty_ms": row.penalty_ms,
+                "disqualified": False,
+            }
+        )
+        accepted += 1
+    # 세션 히스토리는 회차별 원본 유지
+    append_history(rows)
+    overall = _sort_overall(overall)
+    if accepted > 0:
+        save_overall_records(overall)
+    return overall, accepted, skipped
+
+
+def clear_all_records() -> None:
+    """전체 기록·히스토리를 빈 상태로 초기화 (JSON/CSV)."""
+    _ensure_data_dir()
+    save_overall_records([])
+    with HISTORY_PATH.open("w", encoding="utf-8") as f:
+        json.dump({"records": []}, f, ensure_ascii=False, indent=2)
+
+
+def mark_record_erased(
+    student_id: str,
+    name: str,
+    rc_id: str = "",
+) -> list[dict[str, Any]]:
+    """수동 기록말소 — 학번+이름 기록을 말소 상태로 즉시 저장."""
+    sid = str(student_id or "").strip()
+    nm = str(name or "").strip()
+    if not sid or not nm:
+        return load_overall_records()
+    overall = load_overall_records()
+    overall.append(
+        {
+            "rank": 0,
+            "rc_id": rc_id,
+            "student_id": sid,
+            "name": nm,
+            "laps": ["말소", "말소", "말소"],
+            "total": "말소",
+            "total_ms": 10**12 - 1,
+            "penalty_ms": 0,
+            "disqualified": True,
+        }
+    )
+    overall = _sort_overall(overall)
+    save_overall_records(overall)
+    return overall
+
+
+def force_update_record(row: RankRow) -> list[dict[str, Any]]:
+    """경기 종료 후 패널티 등 — 학번+이름 기록을 강제 갱신(성적 저하 포함)."""
+    sid = str(row.student_id or "").strip()
+    name = str(row.name or "").strip()
+    if not sid or not name:
+        return load_overall_records()
+    if row.disqualified:
+        return mark_record_erased(sid, name, rc_id=row.rc_id)
+
+    total_ms = _parse_total_ms(row.total_label)
+    overall = load_overall_records()
+    key = _record_identity_key(sid, name)
+    replaced = False
+    for i, existing in enumerate(overall):
+        if _record_identity_key(
+            str(existing.get("student_id", "")), str(existing.get("name", ""))
+        ) != key:
+            continue
+        overall[i] = {
+            "rank": 0,
+            "rc_id": row.rc_id,
+            "student_id": sid,
+            "name": name,
+            "laps": list(row.lap_labels),
+            "total": row.total_label,
+            "total_ms": total_ms,
+            "penalty_ms": row.penalty_ms,
+            "disqualified": False,
+        }
+        replaced = True
+        break
+    if not replaced:
+        overall.append(
+            {
+                "rank": 0,
+                "rc_id": row.rc_id,
+                "student_id": sid,
+                "name": name,
+                "laps": list(row.lap_labels),
+                "total": row.total_label,
+                "total_ms": total_ms,
+                "penalty_ms": row.penalty_ms,
+                "disqualified": False,
             }
         )
     overall = _sort_overall(overall)
     save_overall_records(overall)
-    # 세션 히스토리도 유지(디버그/호환)
-    append_history(rows)
     return overall
 
 
 def load_history(path: Path | None = None) -> list[dict[str, Any]]:
     target = path or HISTORY_PATH
-    if not target.exists():
-        return []
-    with target.open(encoding="utf-8") as f:
-        raw = json.load(f)
-    return list(raw.get("records", []))
+    raw = _read_json_object(target)
+    if isinstance(raw, dict):
+        return list(raw.get("records") or [])
+    if isinstance(raw, list):
+        return list(raw)
+    return []
 
 
 def append_history(rows: list[RankRow], path: Path | None = None) -> None:
@@ -271,9 +500,14 @@ def append_history(rows: list[RankRow], path: Path | None = None) -> None:
                     "penalty_ms": row.penalty_ms,
                 }
                 for row in rows
+                if row.rank > 0 and not row.disqualified
             ]
         }
     )
+    # 빈 entries만 있는 회차는 생략
+    if not records[-1]["entries"]:
+        records.pop()
+        return
     with target.open("w", encoding="utf-8") as f:
         json.dump({"records": records}, f, ensure_ascii=False, indent=2)
 
