@@ -5,6 +5,7 @@ __pycache__/
 venv/
 .env
 .env.local
+data/upload_secret.txt
 *.log
 .DS_Store
 web/node_modules/

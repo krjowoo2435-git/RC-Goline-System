@@ -11,9 +11,21 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+function normalizeSecret(raw: string | undefined | null): string {
+  let s = (raw ?? "").trim();
+  if (
+    s.length >= 2 &&
+    ((s.startsWith('"') && s.endsWith('"')) ||
+      (s.startsWith("'") && s.endsWith("'")))
+  ) {
+    s = s.slice(1, -1).trim();
+  }
+  return s;
+}
+
 function authorizeUpload(request: Request): boolean {
-  const expected = process.env.RCGLS_UPLOAD_SECRET?.trim();
-  const got = request.headers.get("x-rcgls-upload-secret") || "";
+  const expected = normalizeSecret(process.env.RCGLS_UPLOAD_SECRET);
+  const got = normalizeSecret(request.headers.get("x-rcgls-upload-secret"));
   // 배포(Vercel/production)에서는 시크릿 필수 — 미설정 시 POST 거부
   const isProd =
     process.env.VERCEL === "1" || process.env.NODE_ENV === "production";

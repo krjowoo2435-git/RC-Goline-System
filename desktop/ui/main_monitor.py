@@ -13,7 +13,12 @@ from ..finish_line import VirtualFinishLine
 from ..hardware import HardwareController, HardwareState, list_com_ports
 from ..models import Participant, RacePhase, RankRow
 from ..race_engine import RaceConfig, RaceEngine
-from ..storage import clear_all_records, load_participants, save_participants
+from ..storage import (
+    clear_all_records,
+    load_participants,
+    load_upload_secret,
+    save_participants,
+)
 from . import theme as T
 from .manual_penalty import ManualPenaltyWindow
 from .sub_monitor import SubMonitor
@@ -424,12 +429,10 @@ class MainMonitor(tk.Tk):
         return base
 
     def _web_api_headers(self, with_json: bool = False) -> dict[str, str]:
-        import os
-
         headers: dict[str, str] = {}
         if with_json:
             headers["Content-Type"] = "application/json; charset=utf-8"
-        secret = os.environ.get("RCGLS_UPLOAD_SECRET", "").strip()
+        secret = load_upload_secret()
         if secret:
             headers["x-rcgls-upload-secret"] = secret
         return headers
@@ -483,6 +486,44 @@ class MainMonitor(tk.Tk):
             raise RuntimeError(
                 f"웹 서버에 연결할 수 없습니다.\n대상: {url}\n{exc}"
             ) from exc
+
+    def _web_clear_records(self) -> str:
+        """웹 전체 기록 삭제. clear API 없으면 GET으로 이미 비었는지 확인."""
+        import json
+
+        if not load_upload_secret():
+            raise RuntimeError(
+                "업로드 시크릿이 없습니다. data/upload_secret.txt 에 "
+                "Vercel RCGLS_UPLOAD_SECRET 과 같은 값을 넣으세요."
+            )
+
+        # 1) 신 API: POST { clear: true }
+        try:
+            payload = self._web_request(
+                "POST",
+                body=json.dumps({"clear": True}, ensure_ascii=False).encode("utf-8"),
+            )
+            if payload.get("cleared") is True or (
+                payload.get("ok") and payload.get("count") == 0 and "cleared" in payload
+            ):
+                return str(payload.get("source", "web"))
+        except RuntimeError as exc:
+            msg = str(exc)
+            if "401" in msg:
+                raise
+            # 400/405 등 — 구배포는 clear 미지원. 아래로 폴백
+            self._append_exec_log(f"web clear API 미지원, 폴백 확인: {exc}")
+
+        # 2) 구 API: 현재 웹 기록이 이미 비었으면 성공으로 간주
+        current = self._web_request("GET")
+        records = current.get("records") or []
+        if not records:
+            return f"{current.get('source', 'web')} (이미 비어 있음)"
+
+        raise RuntimeError(
+            "웹에 기록이 남아 있는데 서버가 초기화(clear)를 지원하지 않습니다.\n"
+            "GitHub 브랜치 krjowoo2435/improve 를 main에 머지한 뒤 Vercel 배포가 필요합니다."
+        )
 
     def _web_upload_records(self) -> None:
         """Figma 웹 흐름: 전체 기록 → web API로 데이터 대입."""
@@ -634,21 +675,8 @@ class MainMonitor(tk.Tk):
         web_ok = False
         web_detail = ""
         try:
-            import json
-
-            # POST clear — DELETE는 구배포/일부 프록시에서 405
-            payload = self._web_request(
-                "POST",
-                body=json.dumps({"clear": True}, ensure_ascii=False).encode("utf-8"),
-            )
-            if not payload.get("cleared") and payload.get("count", -1) != 0:
-                # 구 API가 clear를 무시하고 빈 병합만 한 경우
-                raise RuntimeError(
-                    "웹 서버가 초기화(clear)를 지원하지 않습니다. "
-                    "최신 web을 배포한 뒤 다시 시도하세요."
-                )
+            web_detail = self._web_clear_records()
             web_ok = True
-            web_detail = str(payload.get("source", "web"))
             self._append_exec_log(f"web 기록 초기화 ({web_detail})")
         except Exception as exc:  # noqa: BLE001
             web_detail = str(exc)
@@ -673,13 +701,14 @@ class MainMonitor(tk.Tk):
                 parent=self,
             )
         else:
+            hint = (
+                "시크릿(401): data/upload_secret.txt 와 Vercel 값을 맞추세요.\n"
+                "초기화 API 미배포(400/405): krjowoo2435/improve 를 main에 머지·배포하세요."
+            )
             messagebox.showwarning(
                 "부분 초기화",
                 "로컬 기록은 비웠지만 웹 초기화에 실패했습니다.\n\n"
-                f"{web_detail}\n\n"
-                "원인: 배포된 웹에 초기화 API가 없거나(HTTP 405),\n"
-                "RCGLS_UPLOAD_SECRET / 배포가 최신이 아닐 수 있습니다.\n"
-                "web 폴더를 Vercel에 재배포한 뒤 다시 시도하세요.",
+                f"{web_detail}\n\n{hint}",
                 parent=self,
             )
 

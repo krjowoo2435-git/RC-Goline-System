@@ -9,6 +9,7 @@ from .models import Participant, RankRow
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
+UPLOAD_SECRET_FILE = DATA_DIR / "upload_secret.txt"
 
 PARTICIPANTS_JSON = DATA_DIR / "participants.json"
 PARTICIPANTS_CSV = DATA_DIR / "participants.csv"
@@ -392,6 +393,51 @@ def clear_all_records() -> None:
     save_overall_records([])
     with HISTORY_PATH.open("w", encoding="utf-8") as f:
         json.dump({"records": []}, f, ensure_ascii=False, indent=2)
+
+
+def _normalize_secret(raw: str) -> str:
+    """공백·감싸는 따옴표 제거 (복붙 시 \"값\" 형태 대비)."""
+    s = (raw or "").strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"'):
+        s = s[1:-1].strip()
+    return s
+
+
+def load_upload_secret() -> str:
+    """웹 업로드 시크릿. 환경변수 → data/upload_secret.txt → 루트 .env 순."""
+    import os
+
+    env = _normalize_secret(os.environ.get("RCGLS_UPLOAD_SECRET", ""))
+    if env:
+        return env
+
+    if UPLOAD_SECRET_FILE.exists():
+        try:
+            text = UPLOAD_SECRET_FILE.read_text(encoding="utf-8").strip()
+            # 첫 줄만 (주석 # 무시)
+            for line in text.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.upper().startswith("RCGLS_UPLOAD_SECRET="):
+                    return _normalize_secret(line.split("=", 1)[1])
+                return _normalize_secret(line)
+        except OSError:
+            pass
+
+    env_path = ROOT / ".env"
+    if env_path.exists():
+        try:
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                if key.strip() == "RCGLS_UPLOAD_SECRET":
+                    return _normalize_secret(val)
+        except OSError:
+            pass
+    return ""
 
 
 def mark_record_erased(
