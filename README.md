@@ -28,8 +28,7 @@ idea by 고정우
 winget install Python.Python.3.12 --accept-package-agreements --accept-source-agreements
 설치 후 PowerShell을 닫았다가 다시 열고:
 python --version
-- python -m venv .venv
-- .\.venv\Scripts\Activate.ps1
+- python -m venv .venv..\.venv\Scripts\Activate.ps1
 - pip install -r requirements.txt
 
 실행 명령어
