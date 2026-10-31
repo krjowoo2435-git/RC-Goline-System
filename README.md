@@ -20,3 +20,14 @@ ArCuo마크의 중앙이 골라인을 통과 → 진행중인 랩과 랩 타임�
 
 
 idea by 고정우
+
+
+
+환경 설치 명령어
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+
+실행 명령어
+.\.venv\Scripts\Activate.ps1
+python -m desktop
