@@ -44,7 +44,20 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "JSON 본문이 필요합니다." }, { status: 400 });
   }
 
-  const payload = body as { records?: unknown };
+  const payload = body as { records?: unknown; clear?: unknown };
+  // clear: true → 전체 초기화 (DELETE가 405인 배포/프록시 대비)
+  if (payload.clear === true) {
+    const cleared = await clearAllRecordsStore();
+    return NextResponse.json({
+      ok: true,
+      cleared: true,
+      count: 0,
+      source: cleared.source,
+      path: cleared.path,
+      records: [],
+    });
+  }
+
   if (!Array.isArray(payload.records)) {
     return NextResponse.json({ error: "records 배열이 필요합니다." }, { status: 400 });
   }

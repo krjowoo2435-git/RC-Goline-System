@@ -634,7 +634,19 @@ class MainMonitor(tk.Tk):
         web_ok = False
         web_detail = ""
         try:
-            payload = self._web_request("DELETE")
+            import json
+
+            # POST clear — DELETE는 구배포/일부 프록시에서 405
+            payload = self._web_request(
+                "POST",
+                body=json.dumps({"clear": True}, ensure_ascii=False).encode("utf-8"),
+            )
+            if not payload.get("cleared") and payload.get("count", -1) != 0:
+                # 구 API가 clear를 무시하고 빈 병합만 한 경우
+                raise RuntimeError(
+                    "웹 서버가 초기화(clear)를 지원하지 않습니다. "
+                    "최신 web을 배포한 뒤 다시 시도하세요."
+                )
             web_ok = True
             web_detail = str(payload.get("source", "web"))
             self._append_exec_log(f"web 기록 초기화 ({web_detail})")
@@ -665,7 +677,9 @@ class MainMonitor(tk.Tk):
                 "부분 초기화",
                 "로컬 기록은 비웠지만 웹 초기화에 실패했습니다.\n\n"
                 f"{web_detail}\n\n"
-                "RCGLS_UPLOAD_SECRET / 배포 상태를 확인하세요.",
+                "원인: 배포된 웹에 초기화 API가 없거나(HTTP 405),\n"
+                "RCGLS_UPLOAD_SECRET / 배포가 최신이 아닐 수 있습니다.\n"
+                "web 폴더를 Vercel에 재배포한 뒤 다시 시도하세요.",
                 parent=self,
             )
 
