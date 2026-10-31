@@ -4,7 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "RC Goal Line · 기록",
   description: "RC 골라인 전체 기록 (모바일 웹)",
-  metadataBase: new URL("https://jijokrcrecord.xz"),
+  metadataBase: new URL("https://www.jijokrcrecord.kr"),
 };
 
 export const viewport: Viewport = {

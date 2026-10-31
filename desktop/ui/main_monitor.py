@@ -394,13 +394,35 @@ class MainMonitor(tk.Tk):
             messagebox.showwarning("web 업로드", "업로드할 기록이 없습니다.")
             return
 
-        base = os.environ.get("RCGLS_WEB_URL", "https://jijokrcrecord.xz").rstrip("/")
+        # apex(jijokrcrecord.kr)는 www 로 308 리다이렉트됨 → www 기본 사용
+        base = os.environ.get("RCGLS_WEB_URL", "https://www.jijokrcrecord.kr").rstrip("/")
+        if base in {"https://jijokrcrecord.kr", "http://jijokrcrecord.kr"}:
+            base = "https://www.jijokrcrecord.kr"
         url = f"{base}/api/records"
         body = json.dumps({"records": records}, ensure_ascii=False).encode("utf-8")
         headers = {"Content-Type": "application/json; charset=utf-8"}
         secret = os.environ.get("RCGLS_UPLOAD_SECRET", "").strip()
         if secret:
             headers["x-rcgls-upload-secret"] = secret
+
+        class _PostRedirectHandler(urllib.request.HTTPRedirectHandler):
+            """308/307에서도 POST 본문을 유지하며 따라감."""
+
+            def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: N803
+                method = req.get_method()
+                if code in (301, 302, 303) and method != "GET":
+                    method = "GET"
+                    data = None
+                else:
+                    data = req.data
+                return urllib.request.Request(
+                    newurl,
+                    data=data,
+                    headers={k: v for k, v in req.headers.items()},
+                    method=method,
+                )
+
+        opener = urllib.request.build_opener(_PostRedirectHandler)
         req = urllib.request.Request(
             url,
             data=body,
@@ -408,7 +430,7 @@ class MainMonitor(tk.Tk):
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=12) as resp:
+            with opener.open(req, timeout=12) as resp:
                 raw = resp.read().decode("utf-8")
             payload = json.loads(raw) if raw else {}
             count = payload.get("count", len(records))
@@ -419,12 +441,22 @@ class MainMonitor(tk.Tk):
                 "web에 기록 업로드",
                 f"{count}건을 웹에 반영했습니다.\n저장소: {source}\n{base}",
             )
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")
+            except Exception:  # noqa: BLE001
+                detail = str(exc)
+            messagebox.showerror(
+                "web 업로드 실패",
+                f"업로드 요청이 실패했습니다.\n대상: {url}\n\nHTTP {exc.code}: {detail}",
+            )
         except urllib.error.URLError as exc:
             messagebox.showerror(
                 "web 업로드 실패",
                 "웹 서버에 연결할 수 없습니다.\n"
                 f"대상: {url}\n"
-                "web 폴더에서 `npm run dev` 실행 후 다시 시도하세요.\n\n"
+                "도메인(DNS) 또는 배포 상태를 확인하세요.\n\n"
                 f"{exc}",
             )
         except Exception as exc:  # noqa: BLE001
