@@ -1,0 +1,237 @@
+:root {
+  color-scheme: dark;
+  --bg-deep: #060b24;
+  --bg-mid: #0d1a4a;
+  --bg-top: #142868;
+  --card-top: #2a57d4;
+  --card-bottom: #10286f;
+  --fg: #ffffff;
+  --muted: rgba(255, 255, 255, 0.72);
+  --active: rgba(255, 214, 102, 0.28);
+  --active-ring: #f0c14a;
+  --font: "Pretendard", "Noto Sans KR", "Apple SD Gothic Neo", "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", "Consolas", ui-monospace, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  font-family: var(--font);
+  color: var(--fg);
+  background: #070d22;
+}
+
+body {
+  display: flex;
+  justify-content: center;
+  min-height: 100dvh;
+}
+
+.phone-shell {
+  position: relative;
+  width: min(100%, 390px);
+  min-height: 100dvh;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.28), rgba(0, 0, 0, 0.45)),
+    radial-gradient(110% 55% at 50% 0%, rgba(70, 110, 210, 0.45) 0%, transparent 60%),
+    linear-gradient(180deg, var(--bg-top) 0%, var(--bg-mid) 48%, var(--bg-deep) 100%);
+}
+
+.phone-shell::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.35;
+  background-image:
+    radial-gradient(1px 1px at 12% 18%, rgba(255, 255, 255, 0.55), transparent),
+    radial-gradient(1px 1px at 28% 42%, rgba(255, 255, 255, 0.4), transparent),
+    radial-gradient(1.2px 1.2px at 63% 22%, rgba(255, 255, 255, 0.5), transparent),
+    radial-gradient(1px 1px at 78% 58%, rgba(255, 255, 255, 0.35), transparent),
+    radial-gradient(1px 1px at 41% 76%, rgba(255, 255, 255, 0.45), transparent),
+    radial-gradient(1.4px 1.4px at 88% 12%, rgba(200, 220, 255, 0.55), transparent),
+    radial-gradient(1px 1px at 8% 88%, rgba(255, 255, 255, 0.3), transparent);
+  mix-blend-mode: screen;
+}
+
+.phone-shell > * {
+  position: relative;
+  z-index: 1;
+}
+
+@media (min-width: 480px) {
+  body {
+    padding: 1.25rem 1rem;
+    background:
+      radial-gradient(80% 50% at 50% 0%, #1a2f70 0%, transparent 60%),
+      #050a18;
+  }
+
+  .phone-shell {
+    min-height: min(780px, calc(100dvh - 2.5rem));
+    border-radius: 18px;
+    box-shadow:
+      0 24px 60px rgba(0, 0, 0, 0.45),
+      0 0 0 1px rgba(120, 160, 255, 0.18);
+  }
+}
+
+.search-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  margin: 1.35rem 1.15rem 1.35rem;
+  padding: 0;
+  background: transparent;
+  flex-shrink: 0;
+}
+
+.search-icon {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+  border-radius: 4px;
+}
+
+.search-icon img {
+  width: 48px;
+  height: 48px;
+  display: block;
+}
+
+.search-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 1.55rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--fg);
+  outline: none;
+}
+
+.search-input::placeholder {
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.records-panel {
+  flex: 1;
+  margin: 0 1.15rem 1.25rem;
+  padding: 1.05rem 0.75rem 0.75rem;
+  border-radius: 15px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.2), rgba(0, 0, 0, 0.28)),
+    linear-gradient(165deg, #2450c2 0%, #163689 42%, #0c1f5c 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 10px 28px rgba(0, 0, 0, 0.28);
+}
+
+.search-status {
+  margin: 0 0.2rem 0.55rem;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.records-scroll {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+  -webkit-overflow-scrolling: touch;
+}
+
+.empty {
+  margin: 0;
+  min-height: 12rem;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 1.35rem;
+  font-weight: 700;
+}
+
+.records-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.records-table th,
+.records-table td {
+  padding: 0.7rem 0.35rem;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.records-table th:nth-child(1),
+.records-table td:nth-child(1) {
+  width: 22%;
+  text-align: left;
+  padding-left: 0.7rem;
+}
+
+.records-table th:nth-child(2),
+.records-table td:nth-child(2) {
+  width: 30%;
+  text-align: center;
+}
+
+.records-table th:nth-child(3),
+.records-table td:nth-child(3) {
+  width: 48%;
+  text-align: right;
+  padding-right: 0.7rem;
+}
+
+.records-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: linear-gradient(180deg, rgba(20, 48, 130, 0.95), rgba(14, 34, 95, 0.95));
+  font-family: var(--font);
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: #fff;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.records-table td {
+  font-family: var(--mono);
+  font-size: 0.86rem;
+  color: rgba(255, 255, 255, 0.95);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.records-table tbody tr.is-active {
+  background: var(--active);
+  outline: 2px solid var(--active-ring);
+  outline-offset: -2px;
+}
+
+.records-table tbody tr:nth-child(even):not(.is-active) {
+  background: rgba(255, 255, 255, 0.04);
+}
