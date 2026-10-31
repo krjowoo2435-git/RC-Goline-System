@@ -83,7 +83,7 @@ export default function RecordsBoard({ initialRecords }: Props) {
           className="search-input"
           type="search"
           inputMode="numeric"
-          placeholder="검색창"
+          placeholder="눌러서 검색(학번)"
           value={query}
           onChange={(e) => {
             setQuery(e.target.value);
@@ -101,7 +101,7 @@ export default function RecordsBoard({ initialRecords }: Props) {
 
         <div className="records-scroll">
           {ordered.length === 0 ? (
-            <p className="empty">기록표시</p>
+            <p className="empty">기록이 표시됨니다.</p>
           ) : (
             <table className="records-table">
               <thead>
