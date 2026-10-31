@@ -11,8 +11,3 @@ python --version
 
 실행 명령어
 - python -m desktop
-
-
-- Idea by 고정우
-- Coding by 고정우, Cursor
-- UI design by 조원준
