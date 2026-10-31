@@ -101,7 +101,7 @@ export default function RecordsBoard({ initialRecords }: Props) {
 
         <div className="records-scroll">
           {ordered.length === 0 ? (
-            <p className="empty">기록이 표시됨니다.</p>
+            <p className="empty">기록이 표시됩니다.</p>
           ) : (
             <table className="records-table">
               <thead>
