@@ -394,10 +394,7 @@ class MainMonitor(tk.Tk):
             messagebox.showwarning("web 업로드", "업로드할 기록이 없습니다.")
             return
 
-        # apex(jijokrcrecord.kr)는 www 로 308 리다이렉트됨 → www 기본 사용
-        base = os.environ.get("RCGLS_WEB_URL", "https://www.jijokrcrecord.kr").rstrip("/")
-        if base in {"https://jijokrcrecord.kr", "http://jijokrcrecord.kr"}:
-            base = "https://www.jijokrcrecord.kr"
+        base = os.environ.get("RCGLS_WEB_URL", "https://jijokrcrecord.kr").rstrip("/")
         url = f"{base}/api/records"
         body = json.dumps({"records": records}, ensure_ascii=False).encode("utf-8")
         headers = {"Content-Type": "application/json; charset=utf-8"}
