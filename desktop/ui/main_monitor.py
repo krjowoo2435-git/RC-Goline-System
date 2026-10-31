@@ -394,7 +394,7 @@ class MainMonitor(tk.Tk):
             messagebox.showwarning("web 업로드", "업로드할 기록이 없습니다.")
             return
 
-        base = os.environ.get("RCGLS_WEB_URL", "https://jijokrcrecord.xz").rstrip("/")
+        base = os.environ.get("RCGLS_WEB_URL", "https://jijokrcrecord.kr").rstrip("/")
         url = f"{base}/api/records"
         body = json.dumps({"records": records}, ensure_ascii=False).encode("utf-8")
         headers = {"Content-Type": "application/json; charset=utf-8"}
