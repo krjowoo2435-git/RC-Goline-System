@@ -13,7 +13,12 @@ from ..finish_line import VirtualFinishLine
 from ..hardware import HardwareController, HardwareState, list_com_ports
 from ..models import Participant, RacePhase, RankRow
 from ..race_engine import RaceConfig, RaceEngine
-from ..storage import load_participants, save_participants
+from ..storage import (
+    clear_all_records,
+    load_participants,
+    load_upload_secret,
+    save_participants,
+)
 from . import theme as T
 from .manual_penalty import ManualPenaltyWindow
 from .sub_monitor import SubMonitor
@@ -225,6 +230,25 @@ class MainMonitor(tk.Tk):
         tk.Button(
             sensor_line, text="연결", command=self._connect_sensor, bg=T.PANEL_DARK, fg="white"
         ).pack(side="left", padx=2)
+        # 초음파 랩/부정출발 계측 토글 (기본 OFF)
+        self.ultrasonic_var = tk.BooleanVar(
+            value=bool(self.engine.config.ultrasonic_enabled)
+        )
+        ultra_row = tk.Frame(sensor_wrap, bg=T.BTN)
+        ultra_row.pack(fill="x", padx=8, pady=(0, 4))
+        tk.Checkbutton(
+            ultra_row,
+            text="초음파 계측 사용",
+            variable=self.ultrasonic_var,
+            command=self._on_ultrasonic_toggle,
+            bg=T.BTN,
+            fg=T.BTN_FG,
+            activebackground=T.BTN,
+            activeforeground=T.BTN_FG,
+            selectcolor=T.PANEL_DARK,
+            font=T.FONT_UI,
+            anchor="w",
+        ).pack(side="left")
         self.sensor_status = tk.Label(
             sensor_wrap, text="센서: OFF", bg=T.BTN, fg="#D1D5DB", font=T.FONT_UI, anchor="w"
         )
@@ -259,6 +283,18 @@ class MainMonitor(tk.Tk):
         self._gray_btn(
             btn_section, "web에 기록 업로드", self._web_upload_records, fill=True, pady=6
         )
+        tk.Button(
+            btn_section,
+            text="모든 기록 초기화",
+            command=self._clear_all_records,
+            bg="#DC2626",
+            fg="#FFFFFF",
+            activebackground="#B91C1C",
+            activeforeground="#FFFFFF",
+            relief="flat",
+            font=T.FONT_BTN,
+            cursor="hand2",
+        ).pack(fill="x", pady=6)
 
         extra = tk.Frame(btn_section, bg="#E5E7EB")
         extra.pack(fill="x", pady=(4, 0))
@@ -298,6 +334,7 @@ class MainMonitor(tk.Tk):
             tk.Label(
                 header, text=text, bg=T.PANEL_DARK, fg="white", font=T.FONT_UI, width=w
             ).pack(side="left", padx=3, pady=6)
+        # RC-ID 숫자 = ArUco 마커 ID (예: RC-02 → 마커 2)
 
         self._row_vars.clear()
         existing = {p.rc_id: p for p in self.participants}
@@ -330,7 +367,7 @@ class MainMonitor(tk.Tk):
         self._gray_btn(vehicle, "업로드", self._upload_participants, fill=True, pady=8)
         tk.Label(
             edit_section,
-            text="학번·이름 입력 후 업로드 → 로컬 JSON 저장",
+            text="학번·이름 입력 후 업로드 · RC-ID 숫자=마커ID (RC-01→1)",
             bg="#F3F4F6",
             fg=T.MUTED,
             font=T.FONT_UI,
@@ -365,13 +402,15 @@ class MainMonitor(tk.Tk):
                 continue
             if not student_id or not name:
                 raise ValueError(f"{rc_id}: 학번과 이름을 모두 입력하세요.")
-            # 마커 ID는 0부터 (행 순서 = ArUco ID)
+            # 마커 ID = RC-ID 숫자 (RC-01 → 1). 행 순서와 인쇄 마커가 다를 수 있음.
+            digits = "".join(ch for ch in rc_id if ch.isdigit())
+            marker_id = int(digits) if digits else i
             people.append(
                 Participant(
                     rc_id=rc_id,
                     name=name,
                     student_id=student_id,
-                    marker_id=i,
+                    marker_id=marker_id,
                 )
             )
         return people
@@ -380,12 +419,115 @@ class MainMonitor(tk.Tk):
         labels = {p.marker_id: p.rc_id for p in self.participants}
         self.camera.set_marker_labels(labels)
 
+    def _web_api_base(self) -> str:
+        import os
+
+        # apex(jijokrcrecord.kr)는 www 로 308 리다이렉트됨 → www 기본 사용
+        base = os.environ.get("RCGLS_WEB_URL", "https://www.jijokrcrecord.kr").rstrip("/")
+        if base in {"https://jijokrcrecord.kr", "http://jijokrcrecord.kr"}:
+            base = "https://www.jijokrcrecord.kr"
+        return base
+
+    def _web_api_headers(self, with_json: bool = False) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if with_json:
+            headers["Content-Type"] = "application/json; charset=utf-8"
+        secret = load_upload_secret()
+        if secret:
+            headers["x-rcgls-upload-secret"] = secret
+        return headers
+
+    def _web_request(
+        self,
+        method: str,
+        body: bytes | None = None,
+        timeout: float = 12,
+    ) -> dict:
+        """web /api/records 호출. 실패 시 예외."""
+        import json
+        import urllib.error
+        import urllib.request
+
+        base = self._web_api_base()
+        url = f"{base}/api/records"
+        headers = self._web_api_headers(with_json=body is not None)
+
+        class _MethodRedirectHandler(urllib.request.HTTPRedirectHandler):
+            """308/307에서도 메서드·본문 유지."""
+
+            def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: N803
+                m = req.get_method()
+                if code in (301, 302, 303) and m != "GET":
+                    m = "GET"
+                    data = None
+                else:
+                    data = req.data
+                return urllib.request.Request(
+                    newurl,
+                    data=data,
+                    headers={k: v for k, v in req.headers.items()},
+                    method=m,
+                )
+
+        opener = urllib.request.build_opener(_MethodRedirectHandler)
+        req = urllib.request.Request(url, data=body, headers=headers, method=method)
+        try:
+            with opener.open(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")
+            except Exception:  # noqa: BLE001
+                detail = str(exc)
+            raise RuntimeError(f"HTTP {exc.code}: {detail}\n대상: {url}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(
+                f"웹 서버에 연결할 수 없습니다.\n대상: {url}\n{exc}"
+            ) from exc
+
+    def _web_clear_records(self) -> str:
+        """웹 전체 기록 삭제. clear API 없으면 GET으로 이미 비었는지 확인."""
+        import json
+
+        if not load_upload_secret():
+            raise RuntimeError(
+                "업로드 시크릿이 없습니다. data/upload_secret.txt 에 "
+                "Vercel RCGLS_UPLOAD_SECRET 과 같은 값을 넣으세요."
+            )
+
+        # 1) 신 API: POST { clear: true }
+        try:
+            payload = self._web_request(
+                "POST",
+                body=json.dumps({"clear": True}, ensure_ascii=False).encode("utf-8"),
+            )
+            if payload.get("cleared") is True or (
+                payload.get("ok") and payload.get("count") == 0 and "cleared" in payload
+            ):
+                return str(payload.get("source", "web"))
+        except RuntimeError as exc:
+            msg = str(exc)
+            if "401" in msg:
+                raise
+            # 400/405 등 — 구배포는 clear 미지원. 아래로 폴백
+            self._append_exec_log(f"web clear API 미지원, 폴백 확인: {exc}")
+
+        # 2) 구 API: 현재 웹 기록이 이미 비었으면 성공으로 간주
+        current = self._web_request("GET")
+        records = current.get("records") or []
+        if not records:
+            return f"{current.get('source', 'web')} (이미 비어 있음)"
+
+        raise RuntimeError(
+            "웹에 기록이 남아 있는데 서버가 초기화(clear)를 지원하지 않습니다.\n"
+            "GitHub 브랜치 krjowoo2435/improve 를 main에 머지한 뒤 Vercel 배포가 필요합니다."
+        )
+
     def _web_upload_records(self) -> None:
         """Figma 웹 흐름: 전체 기록 → web API로 데이터 대입."""
         import json
-        import os
-        import urllib.error
-        import urllib.request
 
         from ..storage import load_overall_records
 
@@ -394,42 +536,12 @@ class MainMonitor(tk.Tk):
             messagebox.showwarning("web 업로드", "업로드할 기록이 없습니다.")
             return
 
-        base = os.environ.get("RCGLS_WEB_URL", "https://jijokrcrecord.kr").rstrip("/")
-        url = f"{base}/api/records"
-        body = json.dumps({"records": records}, ensure_ascii=False).encode("utf-8")
-        headers = {"Content-Type": "application/json; charset=utf-8"}
-        secret = os.environ.get("RCGLS_UPLOAD_SECRET", "").strip()
-        if secret:
-            headers["x-rcgls-upload-secret"] = secret
-
-        class _PostRedirectHandler(urllib.request.HTTPRedirectHandler):
-            """308/307에서도 POST 본문을 유지하며 따라감."""
-
-            def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: N803
-                method = req.get_method()
-                if code in (301, 302, 303) and method != "GET":
-                    method = "GET"
-                    data = None
-                else:
-                    data = req.data
-                return urllib.request.Request(
-                    newurl,
-                    data=data,
-                    headers={k: v for k, v in req.headers.items()},
-                    method=method,
-                )
-
-        opener = urllib.request.build_opener(_PostRedirectHandler)
-        req = urllib.request.Request(
-            url,
-            data=body,
-            headers=headers,
-            method="POST",
-        )
+        base = self._web_api_base()
         try:
-            with opener.open(req, timeout=12) as resp:
-                raw = resp.read().decode("utf-8")
-            payload = json.loads(raw) if raw else {}
+            payload = self._web_request(
+                "POST",
+                body=json.dumps({"records": records}, ensure_ascii=False).encode("utf-8"),
+            )
             count = payload.get("count", len(records))
             source = payload.get("source", "web")
             self.status_var.set(f"web 업로드 완료 ({count}건, {source}) → {base}")
@@ -437,24 +549,6 @@ class MainMonitor(tk.Tk):
             messagebox.showinfo(
                 "web에 기록 업로드",
                 f"{count}건을 웹에 반영했습니다.\n저장소: {source}\n{base}",
-            )
-        except urllib.error.HTTPError as exc:
-            detail = ""
-            try:
-                detail = exc.read().decode("utf-8", errors="replace")
-            except Exception:  # noqa: BLE001
-                detail = str(exc)
-            messagebox.showerror(
-                "web 업로드 실패",
-                f"업로드 요청이 실패했습니다.\n대상: {url}\n\nHTTP {exc.code}: {detail}",
-            )
-        except urllib.error.URLError as exc:
-            messagebox.showerror(
-                "web 업로드 실패",
-                "웹 서버에 연결할 수 없습니다.\n"
-                f"대상: {url}\n"
-                "도메인(DNS) 또는 배포 상태를 확인하세요.\n\n"
-                f"{exc}",
             )
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("web 업로드 실패", str(exc))
@@ -497,6 +591,11 @@ class MainMonitor(tk.Tk):
         if ports and self.com_var.get() not in ports:
             self.com_var.set(ports[0])
 
+    def _on_ultrasonic_toggle(self) -> None:
+        enabled = bool(self.ultrasonic_var.get())
+        self.engine.set_ultrasonic_enabled(enabled)
+        self._append_exec_log(f"초음파 계측 → {'ON' if enabled else 'OFF'}")
+
     def _connect_sensor(self) -> None:
         ok = self.hardware.connect(self.com_var.get().strip())
         state = self.hardware.snapshot()
@@ -530,18 +629,23 @@ class MainMonitor(tk.Tk):
     # ----- 가상 결승선 -----
     def _on_camera_click(self, event) -> None:
         if self._latest_frame is None:
+            messagebox.showinfo("결승선", "먼저 카메라를 연결하세요.")
             return
         ox, oy = self._display_offset
         scale = self._display_scale or 1.0
+        if scale <= 0:
+            return
         fx = (event.x - ox) / scale
         fy = (event.y - oy) / scale
         h, w = self._latest_frame.shape[:2]
         if fx < 0 or fy < 0 or fx >= w or fy >= h:
+            self.status_var.set("영상 영역 안을 클릭하세요.")
             return
         self.finish_line.add_point(fx, fy)
         n = len(self.finish_line.points)
         if n == 1:
             self.line_hint.config(text="결승선: 점 1 설정됨 — 두 번째 점을 클릭하세요")
+            self._append_exec_log(f"결승선 점1 ({int(fx)},{int(fy)})")
         elif self.finish_line.ready:
             a, b = self.finish_line.points
             self.line_hint.config(
@@ -551,12 +655,70 @@ class MainMonitor(tk.Tk):
             self._append_exec_log(
                 f"가상 결승선 설정 ({int(a.x)},{int(a.y)})-({int(b.x)},{int(b.y)})"
             )
+        # 즉시 다시 그려 점이 보이게
+        self._show_frame(self._latest_frame)
+
+    def _clear_all_records(self) -> None:
+        if not messagebox.askyesno(
+            "모든 기록 초기화",
+            "로컬 + 웹(Supabase) 전체 기록을 모두 삭제합니다.\n"
+            "이 작업은 되돌릴 수 없습니다.\n\n계속할까요?",
+            parent=self,
+        ):
+            return
+        try:
+            clear_all_records()
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("초기화 실패", str(exc), parent=self)
+            return
+
+        web_ok = False
+        web_detail = ""
+        try:
+            web_detail = self._web_clear_records()
+            web_ok = True
+            self._append_exec_log(f"web 기록 초기화 ({web_detail})")
+        except Exception as exc:  # noqa: BLE001
+            web_detail = str(exc)
+            self._append_exec_log(f"web 기록 초기화 실패: {exc}")
+
+        self.status_var.set(
+            "모든 기록 초기화 완료"
+            if web_ok
+            else "로컬 초기화됨 · 웹 초기화 실패"
+        )
+        self._append_exec_log("로컬 모든 기록 초기화")
+        try:
+            if self.sub is not None and self.sub.winfo_exists():
+                self.sub.refresh_history()
+        except tk.TclError:
+            self.sub = None
+
+        if web_ok:
+            messagebox.showinfo(
+                "초기화 완료",
+                f"로컬·웹 기록을 모두 비웠습니다.\n웹 저장소: {web_detail}",
+                parent=self,
+            )
+        else:
+            hint = (
+                "시크릿(401): data/upload_secret.txt 와 Vercel 값을 맞추세요.\n"
+                "초기화 API 미배포(400/405): krjowoo2435/improve 를 main에 머지·배포하세요."
+            )
+            messagebox.showwarning(
+                "부분 초기화",
+                "로컬 기록은 비웠지만 웹 초기화에 실패했습니다.\n\n"
+                f"{web_detail}\n\n{hint}",
+                parent=self,
+            )
 
     def _clear_finish_line(self) -> None:
         self.finish_line.clear()
         self.line_hint.config(text="카메라 클릭 2점으로 가상 결승선 설정")
         self.status_var.set("결승선이 초기화되었습니다.")
         self._append_exec_log("가상 결승선 초기화")
+        if self._latest_frame is not None:
+            self._show_frame(self._latest_frame)
 
     # ----- 경기 -----
     def _read_lap_count(self) -> int:
@@ -606,19 +768,42 @@ class MainMonitor(tk.Tk):
         laps = self._read_lap_count()
         self._clear_exec_log()
         self._append_exec_log(f"경기 시작 요청 (목표 {laps}랩, 참가 {len(self.participants)}명)")
+        # 경기마다 교차/정방향 이력 초기화 (이전 경기 역주행 락 잔존 방지)
+        self.finish_line.reset_crossing_state()
         if self.finish_line.ready:
             self._append_exec_log("가상 결승선: 설정됨")
         else:
             self._append_exec_log("가상 결승선: 미설정")
-        if self.sub:
-            self.sub.refresh_history()
+        # 서브모니터를 닫아도 self.sub 참조가 남을 수 있음 → 존재 확인 후만 갱신
+        # (실패해도 경기 시작은 반드시 진행)
+        try:
+            if self.sub is not None and self.sub.winfo_exists():
+                self.sub.refresh_history()
+            else:
+                self.sub = None
+        except tk.TclError:
+            self.sub = None
         self.engine.start_race(lap_count=laps)
 
     def _open_sub_monitor(self) -> None:
-        if self.sub is None or not self.sub.winfo_exists():
+        try:
+            alive = self.sub is not None and self.sub.winfo_exists()
+        except tk.TclError:
+            alive = False
+            self.sub = None
+        if not alive:
             self.sub = SubMonitor(self)
+            self.sub.protocol("WM_DELETE_WINDOW", self._on_sub_closed)
         else:
             self.sub.lift()
+
+    def _on_sub_closed(self) -> None:
+        if self.sub is not None:
+            try:
+                self.sub.destroy()
+            except tk.TclError:
+                pass
+        self.sub = None
 
     # ----- 콜백 -----
     def _on_status(self, message: str) -> None:
@@ -640,17 +825,23 @@ class MainMonitor(tk.Tk):
     def _on_rank(self, rows: list[RankRow]) -> None:
         def apply() -> None:
             # 순위/랩 표는 서브모니터(현재 경기·랩 기록)에 표시
-            if self.sub and self.sub.winfo_exists():
-                self.sub.update_ranks(rows)
-                if self.engine.phase == RacePhase.FINISHED:
-                    self.sub.refresh_history()
-                    ranked = [r for r in rows if r.rank > 0]
-                    if ranked:
-                        summary = ", ".join(
-                            f"{r.rank}위 {r.name}({r.rc_id}) {r.total_label}"
-                            for r in ranked[:3]
-                        )
-                        self._append_exec_log(f"최종 순위 — {summary}")
+            try:
+                if self.sub is not None and self.sub.winfo_exists():
+                    self.sub.update_ranks(rows)
+                    if self.engine.phase == RacePhase.FINISHED:
+                        self.sub.refresh_history()
+                else:
+                    self.sub = None
+            except tk.TclError:
+                self.sub = None
+            if self.engine.phase == RacePhase.FINISHED:
+                ranked = [r for r in rows if r.rank > 0 and not r.disqualified]
+                if ranked:
+                    summary = ", ".join(
+                        f"{r.rank}위 {r.name}({r.rc_id}) {r.total_label}"
+                        for r in ranked[:3]
+                    )
+                    self._append_exec_log(f"최종 순위 — {summary}")
 
         self.after(0, apply)
 
@@ -696,21 +887,63 @@ class MainMonitor(tk.Tk):
             self.sub.update_hardware(state)
         self.after(80, self._tick)
 
-    def _show_frame(self, frame: np.ndarray) -> None:
+    def _draw_finish_line_bgr(self, frame: np.ndarray) -> np.ndarray:
+        """프레임(BGR)에 결승선 오버레이 — 축소 후에도 보이도록 굵기 보정."""
         drawn = frame.copy()
-        # 결승선 오버레이
-        if self.finish_line.points:
-            for p in self.finish_line.points:
-                cv2.circle(drawn, (int(p.x), int(p.y)), 6, (0, 255, 255), -1)
-            if self.finish_line.ready:
-                a, b = self.finish_line.points
-                cv2.line(
-                    drawn,
-                    (int(a.x), int(a.y)),
-                    (int(b.x), int(b.y)),
-                    (0, 0, 255),
-                    2,
-                )
+        if not self.finish_line.points:
+            return drawn
+        h, w = drawn.shape[:2]
+        # 화면 축소 비율을 가정해 선/점 굵기 키움 (고해상도에서도 보이게)
+        thick = max(3, int(round(min(h, w) / 240)))
+        radius = max(8, thick * 2)
+        for p in self.finish_line.points:
+            cv2.circle(drawn, (int(p.x), int(p.y)), radius, (0, 255, 255), -1)
+            cv2.circle(drawn, (int(p.x), int(p.y)), radius + 2, (0, 0, 0), 2)
+        if self.finish_line.ready:
+            a, b = self.finish_line.points
+            cv2.line(
+                drawn,
+                (int(a.x), int(a.y)),
+                (int(b.x), int(b.y)),
+                (0, 0, 0),
+                thick + 4,
+            )
+            cv2.line(
+                drawn,
+                (int(a.x), int(a.y)),
+                (int(b.x), int(b.y)),
+                (0, 0, 255),
+                thick,
+            )
+        return drawn
+
+    def _draw_finish_line_canvas(self) -> None:
+        """메인 캔버스에 결승선을 화면 좌표로 직접 그림 (축소로 안 보이는 문제 방지)."""
+        if not self.finish_line.points:
+            return
+        ox, oy = self._display_offset
+        scale = self._display_scale or 1.0
+        pts = []
+        for p in self.finish_line.points:
+            cx = ox + p.x * scale
+            cy = oy + p.y * scale
+            pts.append((cx, cy))
+            r = 7
+            self.cam_canvas.create_oval(
+                cx - r, cy - r, cx + r, cy + r,
+                fill="#FACC15", outline="#111827", width=2, tags=("finish_line",),
+            )
+        if len(pts) == 2:
+            (x1, y1), (x2, y2) = pts
+            self.cam_canvas.create_line(
+                x1, y1, x2, y2, fill="#111827", width=6, tags=("finish_line",),
+            )
+            self.cam_canvas.create_line(
+                x1, y1, x2, y2, fill="#EF4444", width=3, tags=("finish_line",),
+            )
+
+    def _show_frame(self, frame: np.ndarray) -> None:
+        drawn = self._draw_finish_line_bgr(frame)
 
         cw = max(self.cam_canvas.winfo_width(), 1)
         ch = max(self.cam_canvas.winfo_height(), 1)
@@ -732,8 +965,14 @@ class MainMonitor(tk.Tk):
             anchor="nw",
             image=photo,
         )
-        if self.sub and self.sub.winfo_exists():
-            self.sub.update_camera_frame(drawn)
+        self._draw_finish_line_canvas()
+        try:
+            if self.sub is not None and self.sub.winfo_exists():
+                self.sub.update_camera_frame(drawn)
+            else:
+                self.sub = None
+        except tk.TclError:
+            self.sub = None
 
     def _on_close(self) -> None:
         self.engine.abort()

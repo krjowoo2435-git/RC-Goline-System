@@ -35,10 +35,13 @@ export default function RecordsBoard({ initialRecords }: Props) {
     };
   }, []);
 
-  const ordered = useMemo(
-    () => [...records].sort((a, b) => (a.rank || 0) - (b.rank || 0)),
-    [records],
-  );
+  const ordered = useMemo(() => {
+    const active = records
+      .filter((r) => !r.disqualified)
+      .sort((a, b) => (a.rank || 0) - (b.rank || 0));
+    const erased = records.filter((r) => r.disqualified);
+    return [...active, ...erased];
+  }, [records]);
 
   function goToStudent(raw: string) {
     const q = raw.trim();
@@ -56,7 +59,11 @@ export default function RecordsBoard({ initialRecords }: Props) {
       return;
     }
     setActiveId(match.student_id);
-    setStatus(`${match.rank}등 · ${match.student_id} · ${match.name}`);
+    setStatus(
+      match.disqualified
+        ? `${match.student_id} · ${match.name} · 기록말소`
+        : `${match.rank}등 · ${match.student_id} · ${match.name}`,
+    );
     const el = rowRefs.current.get(match.student_id);
     el?.scrollIntoView({ behavior: "smooth", block: "center" });
   }
@@ -106,22 +113,28 @@ export default function RecordsBoard({ initialRecords }: Props) {
               </thead>
               <tbody>
                 {ordered.map((row) => {
-                  const key = row.student_id || row.rc_id;
+                  const key = `${row.student_id}-${row.name}-${row.disqualified ? "dq" : row.rank}`;
                   const active = activeId === row.student_id;
+                  const className = [
+                    active ? "is-active" : "",
+                    row.disqualified ? "is-erased" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ");
                   return (
                     <tr
-                      key={`${key}-${row.rank}`}
+                      key={key}
                       ref={(node) => {
                         if (node && row.student_id) {
                           rowRefs.current.set(row.student_id, node);
                         }
                       }}
                       data-student-id={row.student_id}
-                      className={active ? "is-active" : undefined}
+                      className={className || undefined}
                     >
-                      <td>{row.rank || "-"}</td>
+                      <td>{row.disqualified ? "말소" : row.rank || "-"}</td>
                       <td>{row.student_id}</td>
-                      <td>{row.total || "--:--:---"}</td>
+                      <td>{row.disqualified ? "말소" : row.total || "--:--:---"}</td>
                     </tr>
                   );
                 })}

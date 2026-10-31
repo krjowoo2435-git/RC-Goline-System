@@ -16,15 +16,24 @@ class VirtualFinishLine:
 
     points: list[Point] = field(default_factory=list)
     _prev_side: dict[int, float] = field(default_factory=dict)
+    # 마커별 첫 통과 방향(+1/-1). 이후 역방향 교차는 랩으로 치지 않음.
+    _forward_dir: dict[int, int] = field(default_factory=dict)
 
     def clear(self) -> None:
         self.points.clear()
         self._prev_side.clear()
+        self._forward_dir.clear()
+
+    def reset_crossing_state(self) -> None:
+        """경기 시작 시 교차 이력만 초기 (결승선 좌표는 유지)."""
+        self._prev_side.clear()
+        self._forward_dir.clear()
 
     def add_point(self, x: float, y: float) -> None:
         if len(self.points) >= 2:
             self.points.clear()
             self._prev_side.clear()
+            self._forward_dir.clear()
         self.points.append(Point(x, y))
 
     @property
@@ -50,7 +59,7 @@ class VirtualFinishLine:
         return (dx * dx + dy * dy) <= margin * margin
 
     def check_crossing(self, marker_id: int, cx: float, cy: float) -> bool:
-        """ArUco 중심이 결승선을 가로지르면 True (한 번만)."""
+        """ArUco 중심이 결승선을 정방향 가로지르면 True."""
         if not self.ready:
             return False
         if not self._near_segment(cx, cy):
@@ -61,4 +70,12 @@ class VirtualFinishLine:
         if prev is None:
             return False
         # 부호가 바뀌면 교차
-        return prev * side < 0
+        if prev * side >= 0:
+            return False
+        # 첫 교차 방향을 정방향으로 고정 → 역주행 랩 방지
+        direction = 1 if prev > 0 else -1
+        locked = self._forward_dir.get(marker_id)
+        if locked is None:
+            self._forward_dir[marker_id] = direction
+            return True
+        return direction == locked

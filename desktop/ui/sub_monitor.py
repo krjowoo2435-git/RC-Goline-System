@@ -55,7 +55,7 @@ class SubMonitor(tk.Toplevel):
 
         hist_wrap, hist_body = self._block(root, "역대 기록")
         hist_wrap.grid(row=0, column=1, sticky="nsew", pady=(0, 8))
-        hcols = ("회차", "1등", "학번", "기록")
+        hcols = ("순위", "이름", "학번", "기록")
         self.history_tree = ttk.Treeview(hist_body, columns=hcols, show="headings")
         for c, w in zip(hcols, (70, 110, 90, 100)):
             self.history_tree.heading(c, text=c)
@@ -82,9 +82,20 @@ class SubMonitor(tk.Toplevel):
             10, 10, anchor="nw", text="카메라 대기", fill="#9CA3AF", tags=("hint",)
         )
 
+    def _alive(self) -> bool:
+        try:
+            return bool(self.winfo_exists())
+        except tk.TclError:
+            return False
+
     def update_ranks(self, rows: list[RankRow]) -> None:
-        self.race_tree.delete(*self.race_tree.get_children())
-        self.lap_tree.delete(*self.lap_tree.get_children())
+        if not self._alive():
+            return
+        try:
+            self.race_tree.delete(*self.race_tree.get_children())
+            self.lap_tree.delete(*self.lap_tree.get_children())
+        except tk.TclError:
+            return
         for row in rows:
             if row.disqualified:
                 rank = "DQ"
@@ -113,38 +124,51 @@ class SubMonitor(tk.Toplevel):
 
     def refresh_history(self) -> None:
         """전체 기록(역대) — total 정렬된 JSON/CSV 공통 데이터."""
-        self.history_tree.delete(*self.history_tree.get_children())
+        if not self._alive():
+            return
+        try:
+            self.history_tree.delete(*self.history_tree.get_children())
+        except tk.TclError:
+            return
         records = load_overall_records()
         for rec in records[:40]:
-            self.history_tree.insert(
-                "",
-                "end",
-                values=(
-                    f"{rec.get('rank', '-')}위",
-                    rec.get("name", ""),
-                    rec.get("student_id", ""),
-                    rec.get("total", ""),
-                ),
-            )
+            try:
+                self.history_tree.insert(
+                    "",
+                    "end",
+                    values=(
+                        f"{rec.get('rank', '-')}위",
+                        rec.get("name", ""),
+                        rec.get("student_id", ""),
+                        rec.get("total", ""),
+                    ),
+                )
+            except tk.TclError:
+                return
 
     def update_hardware(self, _state) -> None:
         return
 
     def update_camera_frame(self, frame_bgr: np.ndarray) -> None:
         """캠 영역 크기에 맞춰 축소 표시 (영역이 이미지에 끌려 커지지 않음)."""
-        cw = max(self.cam_canvas.winfo_width(), 1)
-        ch = max(self.cam_canvas.winfo_height(), 1)
-        if cw < 20 or ch < 20:
+        if not self._alive():
             return
-        h, w = frame_bgr.shape[:2]
-        scale = min(cw / w, ch / h)
-        nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
-        resized = cv2.resize(frame_bgr, (nw, nh))
-        ok, buf = cv2.imencode(".png", resized)
-        if not ok:
+        try:
+            cw = max(self.cam_canvas.winfo_width(), 1)
+            ch = max(self.cam_canvas.winfo_height(), 1)
+            if cw < 20 or ch < 20:
+                return
+            h, w = frame_bgr.shape[:2]
+            scale = min(cw / w, ch / h)
+            nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
+            resized = cv2.resize(frame_bgr, (nw, nh))
+            ok, buf = cv2.imencode(".png", resized)
+            if not ok:
+                return
+            photo = tk.PhotoImage(data=buf.tobytes())
+            self._camera_photo = photo
+            self.cam_canvas.delete("all")
+            ox, oy = (cw - nw) // 2, (ch - nh) // 2
+            self.cam_canvas.create_image(ox, oy, anchor="nw", image=photo)
+        except tk.TclError:
             return
-        photo = tk.PhotoImage(data=buf.tobytes())
-        self._camera_photo = photo
-        self.cam_canvas.delete("all")
-        ox, oy = (cw - nw) // 2, (ch - nh) // 2
-        self.cam_canvas.create_image(ox, oy, anchor="nw", image=photo)

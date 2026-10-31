@@ -51,8 +51,11 @@ class CameraService:
             self.start()
 
     def start(self) -> bool:
-        if self._running:
+        # 읽기 실패로 루프만 죽은 경우 _running 잔존 → 재시작 가능하도록 정리
+        if self._running and self._thread is not None and self._thread.is_alive():
             return True
+        if self._running:
+            self.stop()
         self._cap = cv2.VideoCapture(self.camera_index)
         if not self._cap.isOpened():
             self.connected = False
@@ -77,28 +80,34 @@ class CameraService:
 
     def _loop(self) -> None:
         assert self._cap is not None
-        while self._running:
-            ok, frame = self._cap.read()
-            if not ok:
-                self.connected = False
-                break
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            corners, ids, _ = self._detector.detectMarkers(gray)
-            markers = draw_marker_rc_labels(frame, corners, ids, self.marker_labels)
-            poses: list[tuple[int, float, float]] = []
-            if ids is not None:
-                for i, marker_id in enumerate(ids.flatten()):
-                    pts = corners[i][0]
-                    cx = float(pts[:, 0].mean())
-                    cy = float(pts[:, 1].mean())
-                    poses.append((int(marker_id), cx, cy))
-            self.last_markers = markers
-            self.last_poses = poses
-            self.last_frame = frame
-            if self.on_markers and markers:
-                self.on_markers(markers)
-            if self.on_marker_poses and poses:
-                self.on_marker_poses(poses)
-            if self.on_frame:
-                self.on_frame(frame)
-        self.connected = False
+        try:
+            while self._running:
+                ok, frame = self._cap.read()
+                if not ok:
+                    break
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                corners, ids, _ = self._detector.detectMarkers(gray)
+                markers = draw_marker_rc_labels(frame, corners, ids, self.marker_labels)
+                poses: list[tuple[int, float, float]] = []
+                if ids is not None:
+                    for i, marker_id in enumerate(ids.flatten()):
+                        pts = corners[i][0]
+                        cx = float(pts[:, 0].mean())
+                        cy = float(pts[:, 1].mean())
+                        poses.append((int(marker_id), cx, cy))
+                self.last_markers = markers
+                self.last_poses = poses
+                self.last_frame = frame
+                if self.on_markers and markers:
+                    self.on_markers(markers)
+                if self.on_marker_poses and poses:
+                    self.on_marker_poses(poses)
+                if self.on_frame:
+                    self.on_frame(frame)
+        finally:
+            # 프레임 실패·정상 종료 모두: 재연결을 위해 실행 플래그 해제
+            self._running = False
+            self.connected = False
+            if self._cap is not None:
+                self._cap.release()
+                self._cap = None

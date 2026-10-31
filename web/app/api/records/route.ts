@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import {
+  clearAllRecordsStore,
   isSupabaseConfigured,
   normalizeRecord,
   readRecords,
@@ -10,10 +11,27 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+function normalizeSecret(raw: string | undefined | null): string {
+  let s = (raw ?? "").trim();
+  if (
+    s.length >= 2 &&
+    ((s.startsWith('"') && s.endsWith('"')) ||
+      (s.startsWith("'") && s.endsWith("'")))
+  ) {
+    s = s.slice(1, -1).trim();
+  }
+  return s;
+}
+
 function authorizeUpload(request: Request): boolean {
-  const expected = process.env.RCGLS_UPLOAD_SECRET;
-  if (!expected) return true; // 시크릿 미설정 시 허용 (로컬/경기장)
-  const got = request.headers.get("x-rcgls-upload-secret") || "";
+  const expected = normalizeSecret(process.env.RCGLS_UPLOAD_SECRET);
+  const got = normalizeSecret(request.headers.get("x-rcgls-upload-secret"));
+  // 배포(Vercel/production)에서는 시크릿 필수 — 미설정 시 POST 거부
+  const isProd =
+    process.env.VERCEL === "1" || process.env.NODE_ENV === "production";
+  if (!expected) {
+    return !isProd;
+  }
   return got === expected;
 }
 
@@ -38,7 +56,20 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "JSON 본문이 필요합니다." }, { status: 400 });
   }
 
-  const payload = body as { records?: unknown };
+  const payload = body as { records?: unknown; clear?: unknown };
+  // clear: true → 전체 초기화 (DELETE가 405인 배포/프록시 대비)
+  if (payload.clear === true) {
+    const cleared = await clearAllRecordsStore();
+    return NextResponse.json({
+      ok: true,
+      cleared: true,
+      count: 0,
+      source: cleared.source,
+      path: cleared.path,
+      records: [],
+    });
+  }
+
   if (!Array.isArray(payload.records)) {
     return NextResponse.json({ error: "records 배열이 필요합니다." }, { status: 400 });
   }
@@ -54,5 +85,20 @@ export async function POST(request: Request) {
     source: saved.source,
     path: saved.path,
     records: saved.records,
+  });
+}
+
+export async function DELETE(request: Request) {
+  if (!authorizeUpload(request)) {
+    return NextResponse.json({ error: "초기화 권한이 없습니다." }, { status: 401 });
+  }
+
+  const cleared = await clearAllRecordsStore();
+  return NextResponse.json({
+    ok: true,
+    count: 0,
+    source: cleared.source,
+    path: cleared.path,
+    records: [],
   });
 }
