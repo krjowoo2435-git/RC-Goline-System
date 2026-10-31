@@ -1,0 +1,64 @@
+# Vercel Speed Insights Installation Report
+
+## Summary
+Vercel Speed Insights is **already installed and properly configured** in this project.
+
+## Current Configuration
+
+### Package Installation
+- **Package**: `@vercel/speed-insights` version `2.0.0`
+- **Location**: Listed in `package.json` dependencies
+- **Package Manager**: npm (using `package-lock.json`)
+- **Installation Status**: ✅ Successfully installed and verified
+
+### Implementation Details
+**File Modified**: `web/app/layout.tsx`
+
+The implementation follows the official Vercel documentation exactly:
+1. Imported `SpeedInsights` component from `@vercel/speed-insights/next` (Next.js App Router specific import)
+2. Placed the `<SpeedInsights />` component in the root layout file inside the `<body>` tag
+3. This ensures Speed Insights tracks all pages in the application
+
+### Code Implementation
+```typescript
+import { SpeedInsights } from "@vercel/speed-insights/next";
+
+export default function RootLayout({ children }) {
+  return (
+    <html lang="ko">
+      <body>
+        {children}
+        <SpeedInsights />
+      </body>
+    </html>
+  );
+}
+```
+
+## Verification Steps Completed
+
+1. ✅ **Documentation Review**: Fetched latest installation instructions from https://vercel.com/docs/speed-insights/quickstart
+2. ✅ **Framework Detection**: Identified Next.js App Router (v15.5.0) with TypeScript
+3. ✅ **Package Installation**: Confirmed `@vercel/speed-insights@2.0.0` is installed
+4. ✅ **Dependencies**: Successfully installed all dependencies using `npm install`
+5. ✅ **Build Verification**: Project builds successfully with no errors (`npm run build`)
+6. ✅ **Integration Check**: SpeedInsights component properly imported and placed in root layout
+
+## Project Details
+- **Framework**: Next.js 15.5.0 (App Router)
+- **Language**: TypeScript 5.8.0
+- **React Version**: 19.1.0
+- **Package Manager**: npm
+
+## Notes
+- The configuration matches the latest official Vercel documentation exactly
+- No changes were needed as the setup was already complete and correct
+- The SpeedInsights component is correctly placed to track all pages
+- Build completes successfully with optimized production bundle
+- All performance metrics will be automatically collected and visible in Vercel dashboard once deployed
+
+## Next Steps
+To view Speed Insights data:
+1. Deploy the project to Vercel (if not already deployed)
+2. Wait for users to visit the site to generate performance data
+3. Access the Vercel dashboard → Select project → Navigate to Speed Insights tab
