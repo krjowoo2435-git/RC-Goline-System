@@ -24,10 +24,10 @@ idea by 고정우
 
 
 환경 설치 명령어
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+- python -m venv .venv
+- .\.venv\Scripts\Activate.ps1
+- pip install -r requirements.txt
 
 실행 명령어
-.\.venv\Scripts\Activate.ps1
-python -m desktop
+- .\.venv\Scripts\Activate.ps1
+- python -m desktop
