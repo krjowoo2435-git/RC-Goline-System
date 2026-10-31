@@ -1,2 +1,14 @@
-/participants.json
-/rc_goline_system.py
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.local
+*.log
+.DS_Store
+web/node_modules/
+web/.next/
+web/.vercel/
+web/.env*.local
+web/.env

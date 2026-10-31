@@ -1,0 +1,22 @@
+{
+  "participants": [
+    {
+      "student_id": "10101",
+      "name": "고정우",
+      "rc_id": "RC-00",
+      "marker_id": 0
+    },
+    {
+      "student_id": "10102",
+      "name": "조원준",
+      "rc_id": "RC-01",
+      "marker_id": 1
+    },
+    {
+      "student_id": "10103",
+      "name": "장기범",
+      "rc_id": "RC-02",
+      "marker_id": 2
+    }
+  ]
+}
