@@ -3,17 +3,17 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Optional
 
-TriggerCallback = Callable[[int, float], None]  # sensor_index, distance_cm
+
+# D3~D7 각 핀에 LED 1개 (총 5개)
+LED_COUNT = 5
 
 
 @dataclass
 class HardwareState:
-    led_on: list[bool] = field(default_factory=lambda: [False, False, False])
+    led_on: list[bool] = field(default_factory=lambda: [False] * LED_COUNT)
     buzzer_on: bool = False
-    distances_cm: list[float] = field(default_factory=lambda: [30.0, 30.0, 30.0])
-    threshold_cm: float = 15.0
     connected: bool = False
     port: str = ""
     last_error: str = ""
@@ -28,24 +28,46 @@ def list_com_ports() -> list[str]:
 
 
 class HardwareController:
-    """아두이노 초음파/LED/부저 — COM 시리얼 연결 + 시뮬레이터.
+    """아두이노 LED/부저 — COM 시리얼 연결.
 
-    수신 프로토콜(한 줄):
-      D,12.5,13.0,14.2
-      DIST,12.5,13.0,14.2
     송신:
-      LED,1,1,0
-      BUZZ,200
+      LED,1,1,0,0,0   # LED1~5 (D3~D7)
+      BUZZ,200        # 능동 부저 (D9, HIGH=ON)
+      STATUS,1        # 상태 LED (D8)
+      TEST            # LED1→5 순차 점등
     """
 
-    def __init__(self, on_pass: Optional[TriggerCallback] = None) -> None:
+    def __init__(self) -> None:
         self.state = HardwareState()
-        self.on_pass = on_pass
-        self._armed = [True, True, True]
         self._lock = threading.Lock()
         self._ser = None
         self._reader: Optional[threading.Thread] = None
         self._running = False
+
+    @staticmethod
+    def _format_open_error(port: str, exc: BaseException) -> str:
+        msg = str(exc)
+        low = msg.lower()
+        if (
+            "access is denied" in low
+            or "permissionerror" in low
+            or "액세스가 거부" in msg
+            or "엑세스가 거부" in msg
+            or "거부되었습니다" in msg
+        ):
+            return (
+                f"{port} 엑세스 거부\n\n"
+                "COM 포트를 다른 프로그램이 사용 중입니다.\n"
+                "· Arduino IDE 시리얼 모니터 닫기\n"
+                "· 다른 RC Goal Line / 시리얼 앱 종료\n"
+                "· USB 뽑았다가 다시 연결 후 재시도"
+            )
+        if "could not open port" in low or "filenotfound" in low:
+            return (
+                f"{port} 을(를) 열 수 없습니다.\n"
+                "USB 연결과 COM 번호(↻ 새로고침)를 확인하세요."
+            )
+        return f"{port} 연결 실패: {msg}"
 
     def connect(self, port: str, baudrate: int = 115200) -> bool:
         self.disconnect()
@@ -63,14 +85,39 @@ class HardwareController:
                 self.state.connected = False
             return False
 
-        try:
-            ser = serial.Serial(port, baudrate=baudrate, timeout=0.05)
-        except Exception as exc:  # noqa: BLE001
+        ser = None
+        last_exc: Optional[BaseException] = None
+        # 업로드/모니터 직후 포트가 잠깐 잠겨 있을 수 있어 재시도
+        for attempt in range(5):
+            try:
+                ser = serial.Serial(
+                    port=port,
+                    baudrate=baudrate,
+                    timeout=0.05,
+                    write_timeout=1.0,
+                )
+                last_exc = None
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                time.sleep(0.4 * (attempt + 1))
+
+        if ser is None:
             with self._lock:
-                self.state.last_error = str(exc)
+                self.state.last_error = self._format_open_error(
+                    port, last_exc or RuntimeError("unknown")
+                )
                 self.state.connected = False
                 self.state.port = port
             return False
+
+        # USB 시리얼 오픈 시 아두이노 리셋 → 부팅 완료 대기
+        time.sleep(2.0)
+        try:
+            ser.reset_input_buffer()
+            ser.reset_output_buffer()
+        except Exception:  # noqa: BLE001
+            pass
 
         with self._lock:
             self._ser = ser
@@ -80,6 +127,8 @@ class HardwareController:
         self._running = True
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
+        self.set_status_led(True)
+        self.all_leds_off()
         return True
 
     def disconnect(self) -> None:
@@ -88,105 +137,83 @@ class HardwareController:
             self._reader.join(timeout=1.0)
         self._reader = None
         with self._lock:
-            if self._ser is not None:
-                try:
-                    self._ser.close()
-                except Exception:  # noqa: BLE001
-                    pass
-                self._ser = None
+            ser = self._ser
+            self._ser = None
             self.state.connected = False
+        if ser is not None:
+            try:
+                # 종료 전 소등 시도 (실패해도 포트는 반드시 닫음)
+                ser.write(b"ALL,0\n")
+                ser.flush()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                ser.close()
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(0.15)
 
     def _write_line(self, line: str) -> None:
         with self._lock:
             ser = self._ser
             connected = self.state.connected
-        if not connected or ser is None:
-            return
-        try:
-            ser.write((line.strip() + "\n").encode("utf-8"))
-        except Exception as exc:  # noqa: BLE001
-            with self._lock:
+            if not connected or ser is None:
+                return
+            try:
+                ser.write((line.strip() + "\n").encode("utf-8"))
+                ser.flush()
+            except Exception as exc:  # noqa: BLE001
                 self.state.last_error = str(exc)
                 self.state.connected = False
 
     def set_leds(self, pattern: list[bool]) -> None:
         with self._lock:
-            self.state.led_on = list(pattern[:3]) + [False] * max(0, 3 - len(pattern))
-            bits = self.state.led_on
-        self._write_line(f"LED,{int(bits[0])},{int(bits[1])},{int(bits[2])}")
+            padded = list(pattern[:LED_COUNT]) + [False] * max(0, LED_COUNT - len(pattern))
+            self.state.led_on = padded
+            bits = list(self.state.led_on)
+        self._write_line("LED," + ",".join(str(int(b)) for b in bits))
 
     def sequential_led_on(self, index: int) -> None:
-        pattern = [i <= index for i in range(3)]
+        """index=0 → LED1만, index=4 → LED1~5 전부 점등."""
+        idx = max(0, min(int(index), LED_COUNT - 1))
+        pattern = [i <= idx for i in range(LED_COUNT)]
         self.set_leds(pattern)
 
     def all_leds_off(self) -> None:
-        self.set_leds([False, False, False])
+        self.set_leds([False] * LED_COUNT)
+
+    def set_status_led(self, on: bool) -> None:
+        self._write_line(f"STATUS,{int(bool(on))}")
+
+    def test_leds(self) -> None:
+        """LED1→5 누적 점등 자가진단."""
+        self._write_line("TEST")
 
     def buzz(self, duration_s: float = 0.25) -> None:
         ms = max(1, int(duration_s * 1000))
+        with self._lock:
+            self.state.buzzer_on = True
+        self._write_line(f"BUZZ,{ms}")
 
-        def _pulse() -> None:
-            with self._lock:
-                self.state.buzzer_on = True
-            self._write_line(f"BUZZ,{ms}")
+        def _clear() -> None:
             time.sleep(duration_s)
             with self._lock:
                 self.state.buzzer_on = False
 
-        threading.Thread(target=_pulse, daemon=True).start()
+        threading.Thread(target=_clear, daemon=True).start()
 
     def snapshot(self) -> HardwareState:
         with self._lock:
             return HardwareState(
                 led_on=list(self.state.led_on),
                 buzzer_on=self.state.buzzer_on,
-                distances_cm=list(self.state.distances_cm),
-                threshold_cm=self.state.threshold_cm,
                 connected=self.state.connected,
                 port=self.state.port,
                 last_error=self.state.last_error,
             )
 
-    def simulate_pass(self, sensor_index: int) -> None:
-        """초음파 통과 시뮬레이션 (거리 단축)."""
-        if sensor_index < 0 or sensor_index > 2:
-            return
-        with self._lock:
-            self.state.distances_cm[sensor_index] = 5.0
-        self._emit_if_pass(sensor_index)
-        time.sleep(0.05)
-        with self._lock:
-            self.state.distances_cm[sensor_index] = 30.0
-            self._armed[sensor_index] = True
-
-    def set_distance(self, sensor_index: int, distance_cm: float) -> None:
-        with self._lock:
-            self.state.distances_cm[sensor_index] = distance_cm
-        self._emit_if_pass(sensor_index)
-
-    def _apply_distances(self, distances: list[float]) -> None:
-        for i, dist in enumerate(distances[:3]):
-            with self._lock:
-                self.state.distances_cm[i] = float(dist)
-            self._emit_if_pass(i)
-
-    def _parse_line(self, line: str) -> None:
-        text = line.strip()
-        if not text:
-            return
-        parts = text.replace(" ", "").split(",")
-        if not parts:
-            return
-        head = parts[0].upper()
-        if head in ("D", "DIST") and len(parts) >= 4:
-            try:
-                distances = [float(parts[1]), float(parts[2]), float(parts[3])]
-            except ValueError:
-                return
-            self._apply_distances(distances)
-
     def _read_loop(self) -> None:
-        buf = ""
+        """아두이노 OK 응답 등을 비워 버퍼 적체를 막는다."""
         while self._running:
             with self._lock:
                 ser = self._ser
@@ -201,31 +228,3 @@ class HardwareController:
                 break
             if not raw:
                 continue
-            try:
-                buf += raw.decode("utf-8", errors="ignore")
-            except Exception:  # noqa: BLE001
-                continue
-            while "\n" in buf:
-                line, buf = buf.split("\n", 1)
-                self._parse_line(line)
-
-    def _emit_if_pass(self, sensor_index: int) -> None:
-        with self._lock:
-            dist = self.state.distances_cm[sensor_index]
-            threshold = self.state.threshold_cm
-            armed = self._armed[sensor_index]
-            if dist < threshold and armed:
-                self._armed[sensor_index] = False
-                callback = self.on_pass
-            else:
-                if dist >= threshold:
-                    self._armed[sensor_index] = True
-                callback = None
-                dist = 0.0
-        if callback is not None:
-            callback(sensor_index, dist)
-
-    def reset_triggers(self) -> None:
-        with self._lock:
-            self._armed = [True, True, True]
-            self.state.distances_cm = [30.0, 30.0, 30.0]

@@ -10,7 +10,7 @@ import numpy as np
 
 from ..camera_service import CameraService
 from ..finish_line import VirtualFinishLine
-from ..hardware import HardwareController, HardwareState, list_com_ports
+from ..hardware import HardwareController, list_com_ports
 from ..models import Participant, RacePhase, RankRow
 from ..race_engine import RaceConfig, RaceEngine
 from ..storage import (
@@ -21,14 +21,15 @@ from ..storage import (
 )
 from . import theme as T
 from .manual_penalty import ManualPenaltyWindow
+from .settings_window import SettingsWindow
 from .sub_monitor import SubMonitor
 
 
 PHASE_LABEL = {
     RacePhase.IDLE: "대기",
     RacePhase.LED_COUNTDOWN: "LED 점등",
-    RacePhase.LIGHTS_OFF: "소등",
-    RacePhase.WAITING_START: "출발 대기",
+    RacePhase.LIGHTS_OFF: "소등 대기",
+    RacePhase.WAITING_START: "소등 대기",
     RacePhase.RACING: "계측 중",
     RacePhase.FINISHED: "종료",
 }
@@ -65,6 +66,7 @@ class MainMonitor(tk.Tk):
         )
         self.sub: Optional[SubMonitor] = None
         self.penalty_win: Optional[ManualPenaltyWindow] = None
+        self.settings_win: Optional[SettingsWindow] = None
         self._photo_main = None
         self._latest_frame: Optional[np.ndarray] = None
         self._display_scale = 1.0
@@ -74,13 +76,19 @@ class MainMonitor(tk.Tk):
         self._fps_value = 0.0
         self._frame_size = (0, 0)
         self._row_vars: list[dict[str, tk.StringVar]] = []
+        self.lap_var = tk.IntVar(value=1)
+        self.com_var = tk.StringVar(value="")
+        self.cam_var = tk.StringVar(value="0")
+        self._arduino_status_text = "아두이노: OFF"
+        self._arduino_status_fg = "#D1D5DB"
+        self._cam_status_text = "카메라: OFF"
+        self._cam_status_fg = T.MUTED
 
         self._build()
         self._sync_marker_labels()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(80, self._tick)
         self.after(200, self._open_sub_monitor)
-        self.after(300, self._refresh_com_ports)
 
     def _gray_btn(self, parent, text, command, fill=False, pady=4):
         btn = tk.Button(
@@ -195,85 +203,7 @@ class MainMonitor(tk.Tk):
             font=("Segoe UI Semibold", 15), pady=10
         )
 
-        lap_wrap = tk.Frame(btn_section, bg=T.BTN)
-        lap_wrap.pack(fill="x", pady=4)
-        tk.Label(lap_wrap, text="랩 수", bg=T.BTN, fg=T.BTN_FG, font=T.FONT_UI).pack(
-            side="left", padx=8, pady=6
-        )
-        self.lap_var = tk.IntVar(value=1)
-        lap_spin = tk.Spinbox(
-            lap_wrap,
-            from_=1,
-            to=10,
-            textvariable=self.lap_var,
-            width=6,
-            font=T.FONT_UI,
-            command=self._on_lap_change,
-        )
-        lap_spin.pack(side="right", padx=8, pady=6)
-        lap_spin.bind("<FocusOut>", lambda _e: self._on_lap_change())
-        lap_spin.bind("<Return>", lambda _e: self._on_lap_change())
-
-        sensor_wrap = tk.Frame(btn_section, bg=T.BTN)
-        sensor_wrap.pack(fill="x", pady=6)
-        tk.Label(
-            sensor_wrap, text="센서 COM위치", bg=T.BTN, fg=T.BTN_FG, font=T.FONT_UI
-        ).pack(anchor="w", padx=8, pady=(6, 0))
-        sensor_line = tk.Frame(sensor_wrap, bg=T.BTN)
-        sensor_line.pack(fill="x", padx=6, pady=6)
-        self.com_var = tk.StringVar(value="")
-        self.com_box = ttk.Combobox(sensor_line, textvariable=self.com_var, width=12)
-        self.com_box.pack(side="left", fill="x", expand=True)
-        tk.Button(
-            sensor_line, text="↻", width=3, command=self._refresh_com_ports, bg=T.PANEL_DARK, fg="white"
-        ).pack(side="left", padx=2)
-        tk.Button(
-            sensor_line, text="연결", command=self._connect_sensor, bg=T.PANEL_DARK, fg="white"
-        ).pack(side="left", padx=2)
-        # 초음파 랩/부정출발 계측 토글 (기본 OFF)
-        self.ultrasonic_var = tk.BooleanVar(
-            value=bool(self.engine.config.ultrasonic_enabled)
-        )
-        ultra_row = tk.Frame(sensor_wrap, bg=T.BTN)
-        ultra_row.pack(fill="x", padx=8, pady=(0, 4))
-        tk.Checkbutton(
-            ultra_row,
-            text="초음파 계측 사용",
-            variable=self.ultrasonic_var,
-            command=self._on_ultrasonic_toggle,
-            bg=T.BTN,
-            fg=T.BTN_FG,
-            activebackground=T.BTN,
-            activeforeground=T.BTN_FG,
-            selectcolor=T.PANEL_DARK,
-            font=T.FONT_UI,
-            anchor="w",
-        ).pack(side="left")
-        self.sensor_status = tk.Label(
-            sensor_wrap, text="센서: OFF", bg=T.BTN, fg="#D1D5DB", font=T.FONT_UI, anchor="w"
-        )
-        self.sensor_status.pack(fill="x", padx=8, pady=(0, 6))
-
-        cam_row = tk.Frame(btn_section, bg="#E5E7EB")
-        cam_row.pack(fill="x", pady=6)
-        self.cam_var = tk.StringVar(value="0")
-        ttk.Combobox(
-            cam_row,
-            textvariable=self.cam_var,
-            values=["0", "1", "2", "3"],
-            width=8,
-            state="readonly",
-        ).pack(side="left", fill="x", expand=True, padx=(0, 4))
-        self._gray_btn(cam_row, "카메라 연결", self._connect_camera).pack(
-            side="left", fill="x", expand=True, padx=2
-        )
-        self._gray_btn(cam_row, "해제", self._disconnect_camera).pack(
-            side="left", fill="x", expand=True, padx=(2, 0)
-        )
-        self.cam_status = tk.Label(
-            btn_section, text="카메라: OFF", bg="#E5E7EB", fg=T.MUTED, font=T.FONT_UI, anchor="w"
-        )
-        self.cam_status.pack(fill="x", pady=(2, 4))
+        self._gray_btn(btn_section, "설정", self._open_settings, fill=True, pady=6)
 
         # 수동 패널티 (Figma: 버튼 부)
         self._gray_btn(
@@ -584,46 +514,84 @@ class MainMonitor(tk.Tk):
         self.status_var.set(msg)
         self._append_exec_log(msg)
 
-    # ----- 센서 / 카메라 -----
+    # ----- 설정 / 아두이노 / 카메라 -----
+    def _open_settings(self) -> None:
+        if self.settings_win is not None and self.settings_win.winfo_exists():
+            self.settings_win.lift()
+            self.settings_win.focus_force()
+            return
+        self.settings_win = SettingsWindow(
+            self,
+            lap_var=self.lap_var,
+            com_var=self.com_var,
+            cam_var=self.cam_var,
+            arduino_status_text=self._arduino_status_text,
+            arduino_status_fg=self._arduino_status_fg,
+            cam_status_text=self._cam_status_text,
+            cam_status_fg=self._cam_status_fg,
+            on_lap_change=self._on_lap_change,
+            on_refresh_com=self._refresh_com_ports,
+            on_connect_arduino=self._connect_arduino,
+            on_connect_camera=self._connect_camera,
+            on_disconnect_camera=self._disconnect_camera,
+            gray_btn=self._gray_btn,
+            on_close=lambda: setattr(self, "settings_win", None),
+        )
+
+    def _set_arduino_status(self, text: str, fg: str) -> None:
+        self._arduino_status_text = text
+        self._arduino_status_fg = fg
+        win = self.settings_win
+        if win is not None and win.winfo_exists():
+            win.arduino_status.config(text=text, fg=fg)
+
+    def _set_cam_status(self, text: str, fg: str) -> None:
+        self._cam_status_text = text
+        self._cam_status_fg = fg
+        win = self.settings_win
+        if win is not None and win.winfo_exists():
+            win.cam_status.config(text=text, fg=fg)
+
     def _refresh_com_ports(self) -> None:
         ports = list_com_ports()
-        self.com_box["values"] = ports
+        win = self.settings_win
+        if win is not None and win.winfo_exists():
+            win.com_box["values"] = ports
         if ports and self.com_var.get() not in ports:
             self.com_var.set(ports[0])
 
-    def _on_ultrasonic_toggle(self) -> None:
-        enabled = bool(self.ultrasonic_var.get())
-        self.engine.set_ultrasonic_enabled(enabled)
-        self._append_exec_log(f"초음파 계측 → {'ON' if enabled else 'OFF'}")
-
-    def _connect_sensor(self) -> None:
-        ok = self.hardware.connect(self.com_var.get().strip())
+    def _connect_arduino(self) -> None:
+        port = self.com_var.get().strip()
+        self.status_var.set(f"아두이노 연결 중… ({port})")
+        self.update_idletasks()
+        ok = self.hardware.connect(port)
         state = self.hardware.snapshot()
         if ok:
-            self.sensor_status.config(text=f"센서: ON ({state.port})", fg="#BBF7D0")
-            self.status_var.set(f"센서 연결: {state.port}")
+            self._set_arduino_status(f"아두이노: ON ({state.port})", "#BBF7D0")
+            self.status_var.set(f"아두이노 연결: {state.port}")
+            self._append_exec_log(f"아두이노 연결: {state.port}")
+            self.hardware.test_leds()
         else:
-            self.sensor_status.config(text="센서: 실패", fg="#FECACA")
-            messagebox.showwarning("센서", state.last_error or "COM 연결 실패")
-
-    def _disconnect_sensor_ui(self) -> None:
-        self.hardware.disconnect()
-        self.sensor_status.config(text="센서: OFF", fg="#D1D5DB")
+            self._set_arduino_status("아두이노: 실패", "#FECACA")
+            self.status_var.set("아두이노 연결 실패")
+            self._append_exec_log(f"아두이노 연결 실패: {state.last_error}")
+            messagebox.showwarning("아두이노", state.last_error or "COM 연결 실패")
 
     def _connect_camera(self) -> None:
         idx = int(self.cam_var.get())
         self.camera.set_camera_index(idx)
         ok = self.camera.start()
-        self.cam_status.config(
-            text=f"카메라: {'ON' if ok else '실패'}",
-            fg=T.OK if ok else T.ACCENT,
-        )
-        if not ok:
+        if ok:
+            profile = self.camera.negotiated_summary()
+            self._set_cam_status(f"카메라: ON ({profile})", T.OK)
+            self._append_exec_log(f"카메라 {idx} 연결 {profile}")
+        else:
+            self._set_cam_status("카메라: 실패", T.ACCENT)
             messagebox.showwarning("카메라", f"카메라 {idx}를 열 수 없습니다.")
 
     def _disconnect_camera(self) -> None:
         self.camera.stop()
-        self.cam_status.config(text="카메라: OFF", fg=T.MUTED)
+        self._set_cam_status("카메라: OFF", T.MUTED)
         self.cam_canvas.delete("all")
 
     # ----- 가상 결승선 -----
@@ -871,7 +839,7 @@ class MainMonitor(tk.Tk):
     def _tick(self) -> None:
         state = self.hardware.snapshot()
         if state.connected:
-            self.sensor_status.config(text=f"센서: ON ({state.port})", fg="#BBF7D0")
+            self._set_arduino_status(f"아두이노: ON ({state.port})", "#BBF7D0")
         self.buzzer_label.config(
             text=f"부저: {'ON' if state.buzzer_on else 'OFF'}",
             fg=T.BUZZER_ON if state.buzzer_on else T.MUTED,

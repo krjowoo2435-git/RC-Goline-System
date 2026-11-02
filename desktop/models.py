@@ -8,9 +8,9 @@ from typing import Optional
 class RacePhase(Enum):
     IDLE = auto()
     LED_COUNTDOWN = auto()  # 부저 + RED LED 순차 점등
-    LIGHTS_OFF = auto()  # 1~3초 후 부저 + 소등
-    WAITING_START = auto()  # 랜덤 1~3초 대기
-    RACING = auto()  # 출발신호 후 계측
+    LIGHTS_OFF = auto()  # 1~3초 랜덤 대기(소등=출발 직전)
+    WAITING_START = auto()  # (미사용) 호환용
+    RACING = auto()  # 소등·부저 = 출발 후 계측
     FINISHED = auto()
 
 

@@ -26,12 +26,6 @@ def _people() -> list[Participant]:
 
 
 class FakeHardware:
-    def __init__(self) -> None:
-        self.on_pass = None
-
-    def reset_triggers(self) -> None:
-        return None
-
     def all_leds_off(self) -> None:
         return None
 
@@ -62,10 +56,8 @@ class RaceEngineWorkerTests(unittest.TestCase):
             participants=_people(),
             hardware=FakeHardware(),  # type: ignore[arg-type]
             config=RaceConfig(
-                led_hold_min_s=0.01,
-                led_hold_max_s=0.01,
-                start_delay_min_s=30.0,
-                start_delay_max_s=30.0,
+                led_hold_min_s=30.0,
+                led_hold_max_s=30.0,
             ),
         )
         engine.start_race(lap_count=1)
@@ -111,36 +103,6 @@ class RaceEngineWorkerTests(unittest.TestCase):
         self.assertEqual(engine.phase, RacePhase.FINISHED)
         self.assertEqual(len(calls), 1)
 
-    def test_ultrasonic_remap_only_when_single_marker(self) -> None:
-        engine = RaceEngine(
-            participants=_people(),
-            hardware=FakeHardware(),  # type: ignore[arg-type]
-            config=RaceConfig(ultrasonic_enabled=True),
-        )
-        engine.phase = RacePhase.RACING
-        engine.start_monotonic = time.monotonic() - 1.0
-        with engine._lock:
-            engine.results = {
-                p.rc_id: RunnerResult(participant=p) for p in _people()
-            }
-            # 두 마커가 동시에 pending → 센서 레인(0) 유지
-            now = time.monotonic()
-            engine._pending_markers = {0: now, 1: now}
-        engine._on_ultrasonic_pass(0, 10.0)
-        r0 = engine.results["RC-00"]
-        r1 = engine.results["RC-01"]
-        self.assertEqual(len(r0.lap_times_ms), 1)
-        self.assertEqual(len(r1.lap_times_ms), 0)
-
-        # 단일 마커면 재매핑
-        with engine._lock:
-            engine.results["RC-00"].lap_times_ms.clear()
-            engine._pass_cooldown_until.clear()
-            engine._pending_markers = {2: time.monotonic()}
-        engine._on_ultrasonic_pass(0, 10.0)
-        self.assertEqual(len(engine.results["RC-02"].lap_times_ms), 1)
-        self.assertEqual(len(engine.results["RC-00"].lap_times_ms), 0)
-
     def test_false_start_message_uses_config(self) -> None:
         statuses: list[str] = []
         engine = RaceEngine(
@@ -153,27 +115,10 @@ class RaceEngineWorkerTests(unittest.TestCase):
             engine.results = {
                 "RC-00": RunnerResult(participant=_people()[0])
             }
-        engine.phase = RacePhase.WAITING_START
-        engine._apply_false_start_penalty(0)
+        engine.phase = RacePhase.LIGHTS_OFF
+        engine.record_finish_line_pass(0)
         self.assertTrue(any("+5초" in s for s in statuses))
-
-    def test_ultrasonic_disabled_ignores_pass(self) -> None:
-        engine = RaceEngine(
-            participants=_people()[:1],
-            hardware=FakeHardware(),  # type: ignore[arg-type]
-            config=RaceConfig(ultrasonic_enabled=False),
-        )
-        engine.phase = RacePhase.RACING
-        engine.start_monotonic = time.monotonic() - 1.0
-        with engine._lock:
-            engine.results = {
-                "RC-00": RunnerResult(participant=_people()[0])
-            }
-        engine._on_ultrasonic_pass(0, 5.0)
-        self.assertEqual(len(engine.results["RC-00"].lap_times_ms), 0)
-        engine.set_ultrasonic_enabled(True)
-        engine._on_ultrasonic_pass(0, 5.0)
-        self.assertEqual(len(engine.results["RC-00"].lap_times_ms), 1)
+        self.assertTrue(engine.results["RC-00"].false_start)
 
     def test_participants_over_max_runners_trimmed_with_notice(self) -> None:
         statuses: list[str] = []
@@ -185,10 +130,8 @@ class RaceEngineWorkerTests(unittest.TestCase):
             hardware=FakeHardware(),  # type: ignore[arg-type]
             config=RaceConfig(
                 max_runners=3,
-                led_hold_min_s=0.01,
-                led_hold_max_s=0.01,
-                start_delay_min_s=30.0,
-                start_delay_max_s=30.0,
+                led_hold_min_s=30.0,
+                led_hold_max_s=30.0,
             ),
             on_status=statuses.append,
         )
