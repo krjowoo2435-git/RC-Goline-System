@@ -43,4 +43,28 @@ drop policy if exists "Anyone can delete race_records" on public.race_records;
 -- 로컬/키오스크에서 publishable(anon) 키로 직접 쓸 때만 아래를 다시 활성화하세요.
 -- create policy "Anyone can insert race_records" ...
 
+-- 공지사항 (단일 행 id=1). 읽기는 공개, 쓰기는 웹 API + RCGLS_UPLOAD_SECRET.
+create table if not exists public.site_notice (
+  id integer primary key default 1 check (id = 1),
+  content text not null default '',
+  updated_at timestamptz not null default now()
+);
+
+insert into public.site_notice (id, content)
+values (1, '')
+on conflict (id) do nothing;
+
+alter table public.site_notice enable row level security;
+
+drop policy if exists "Anyone can read site_notice" on public.site_notice;
+create policy "Anyone can read site_notice"
+  on public.site_notice
+  for select
+  to anon, authenticated
+  using (true);
+
+drop policy if exists "Anyone can insert site_notice" on public.site_notice;
+drop policy if exists "Anyone can update site_notice" on public.site_notice;
+drop policy if exists "Anyone can delete site_notice" on public.site_notice;
+
 notify pgrst, 'reload schema';

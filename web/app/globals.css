@@ -86,11 +86,44 @@ body {
   }
 }
 
+/* Figma 공지사항: 상단 슬롯. 배경은 페이지와 동일(투명) — 임시 구분색 미사용 */
+.notice-bar {
+  flex-shrink: 0;
+  margin: 1.15rem 1.15rem 0;
+  min-height: 37px;
+  display: flex;
+  align-items: center;
+  background: transparent;
+}
+
+.notice-bar.is-empty {
+  min-height: 0.35rem;
+  margin-bottom: 0;
+}
+
+.notice-text {
+  margin: 0;
+  width: 100%;
+  max-height: 2.6rem;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  font-size: 0.92rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.92);
+  white-space: pre-wrap;
+  word-break: keep-all;
+}
+
 .search-bar {
   display: flex;
   align-items: center;
   gap: 0.85rem;
-  margin: 1.35rem 1.15rem 1.35rem;
+  margin: 0.85rem 1.15rem 1.35rem;
   padding: 0;
   background: transparent;
   flex-shrink: 0;
@@ -251,4 +284,134 @@ body {
 
 .records-table tbody tr:nth-child(even):not(.is-active):not(.is-erased) {
   background: rgba(255, 255, 255, 0.04);
+}
+
+.admin-shell {
+  width: min(100%, 520px);
+  margin: 0 auto;
+  padding: 1.5rem 1.15rem 2.5rem;
+  min-height: 100dvh;
+  background:
+    radial-gradient(90% 50% at 50% 0%, rgba(70, 110, 210, 0.35) 0%, transparent 55%),
+    linear-gradient(180deg, #142868 0%, #0d1a4a 48%, #060b24 100%);
+}
+
+.admin-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.35rem;
+}
+
+.admin-kicker {
+  margin: 0 0 0.25rem;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.admin-header h1 {
+  margin: 0;
+  font-size: 1.45rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.admin-link {
+  color: rgba(255, 255, 255, 0.88);
+  text-decoration: none;
+  font-size: 0.9rem;
+  padding: 0.45rem 0.7rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.admin-link:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.admin-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1.15rem;
+  border-radius: 15px;
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.2), rgba(0, 0, 0, 0.28)),
+    linear-gradient(165deg, #2450c2 0%, #163689 42%, #0c1f5c 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 10px 28px rgba(0, 0, 0, 0.28);
+}
+
+.admin-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.admin-input,
+.admin-textarea {
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 10px;
+  padding: 0.75rem 0.85rem;
+  background: rgba(5, 10, 28, 0.45);
+  color: #fff;
+  font: inherit;
+  outline: none;
+}
+
+.admin-textarea {
+  resize: vertical;
+  min-height: 9rem;
+  line-height: 1.45;
+}
+
+.admin-input:focus,
+.admin-textarea:focus {
+  border-color: rgba(240, 193, 74, 0.65);
+}
+
+.admin-hint {
+  margin: 0;
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.62);
+}
+
+.admin-actions {
+  display: flex;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.admin-btn {
+  border: 0;
+  border-radius: 10px;
+  padding: 0.7rem 1.05rem;
+  font: inherit;
+  font-weight: 700;
+  color: #0a1230;
+  background: #f0c14a;
+  cursor: pointer;
+}
+
+.admin-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.admin-btn-ghost {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.admin-status {
+  margin: 0.15rem 0 0;
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.82);
 }

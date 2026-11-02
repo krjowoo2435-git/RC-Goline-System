@@ -5,10 +5,15 @@ import type { RaceRecord } from "@/lib/records";
 
 type Props = {
   initialRecords: RaceRecord[];
+  initialNotice?: string;
 };
 
-export default function RecordsBoard({ initialRecords }: Props) {
+export default function RecordsBoard({
+  initialRecords,
+  initialNotice = "",
+}: Props) {
   const [records, setRecords] = useState<RaceRecord[]>(initialRecords);
+  const [notice, setNotice] = useState(initialNotice);
   const [query, setQuery] = useState("");
   const [activeId, setActiveId] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -18,11 +23,23 @@ export default function RecordsBoard({ initialRecords }: Props) {
     let cancelled = false;
     const tick = async () => {
       try {
-        const res = await fetch("/api/records", { cache: "no-store" });
-        if (!res.ok) return;
-        const data = (await res.json()) as { records: RaceRecord[] };
-        if (!cancelled && Array.isArray(data.records)) {
-          setRecords(data.records);
+        const [recordsRes, noticeRes] = await Promise.all([
+          fetch("/api/records", { cache: "no-store" }),
+          fetch("/api/notice", { cache: "no-store" }),
+        ]);
+        if (recordsRes.ok) {
+          const data = (await recordsRes.json()) as { records: RaceRecord[] };
+          if (!cancelled && Array.isArray(data.records)) {
+            setRecords(data.records);
+          }
+        }
+        if (noticeRes.ok) {
+          const data = (await noticeRes.json()) as {
+            notice?: { content?: string };
+          };
+          if (!cancelled && typeof data.notice?.content === "string") {
+            setNotice(data.notice.content);
+          }
         }
       } catch {
         // ignore polling errors
@@ -73,8 +90,18 @@ export default function RecordsBoard({ initialRecords }: Props) {
     goToStudent(query);
   }
 
+  const noticeText = notice.trim();
+
   return (
     <div className="phone-shell">
+      <section
+        className={`notice-bar${noticeText ? "" : " is-empty"}`}
+        aria-label="공지사항"
+        aria-live="polite"
+      >
+        {noticeText ? <p className="notice-text">{noticeText}</p> : null}
+      </section>
+
       <form className="search-bar" onSubmit={onSubmit} role="search">
         <button type="submit" className="search-icon" aria-label="학번 검색">
           <img src="/search-icon.svg" alt="" width={48} height={48} />

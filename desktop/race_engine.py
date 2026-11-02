@@ -25,14 +25,11 @@ class RaceConfig:
     lap_count: int = 1
     led_hold_min_s: float = 1.0
     led_hold_max_s: float = 3.0
-    start_delay_min_s: float = 1.0
-    start_delay_max_s: float = 3.0
     false_start_penalty_ms: float = 3000.0
+
     max_runners: int = 3
     # 결승선 통과 후 해당 RC-ID 재기록 중단 (역주행/정체 중복 방지)
     pass_cooldown_s: float = 7.0
-    # 초음파 랩/부정출발 계측 (기본 OFF — 가상 결승선만 쓸 때)
-    ultrasonic_enabled: bool = False
 
 
 @dataclass
@@ -52,11 +49,9 @@ class RaceEngine:
     _finish_lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
     _marker_to_rc: dict[int, str] = field(default_factory=dict, init=False)
-    _pending_markers: dict[int, float] = field(default_factory=dict, init=False)
     _pass_cooldown_until: dict[str, float] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
-        self.hardware.on_pass = self._on_ultrasonic_pass
         self._rebuild_marker_map()
 
     def _rebuild_marker_map(self) -> None:
@@ -69,11 +64,6 @@ class RaceEngine:
 
     def set_lap_count(self, laps: int) -> None:
         self.config.lap_count = max(1, min(10, int(laps)))
-
-    def set_ultrasonic_enabled(self, enabled: bool) -> None:
-        self.config.ultrasonic_enabled = bool(enabled)
-        state = "ON" if self.config.ultrasonic_enabled else "OFF"
-        self._emit_status(f"초음파 계측: {state}")
 
     def _emit_status(self, message: str) -> None:
         if self.on_status:
@@ -269,12 +259,10 @@ class RaceEngine:
         skipped = len(self.participants) - len(registered)
 
         self._stop = False
-        self.hardware.reset_triggers()
         with self._lock:
             self.results = {
                 p.rc_id: RunnerResult(participant=p) for p in registered
             }
-            self._pending_markers.clear()
             self._pass_cooldown_until.clear()
             self.start_monotonic = None
 
@@ -305,43 +293,30 @@ class RaceEngine:
         return True
 
     def _run_sequence(self) -> None:
-        # 1) 부저 + RED LED 순차 점등
+        # 1) LED1→5 누적 점등 (시작 직후 부저 없음, 각 LED 점등 시 부저, 간격 1초)
         self._set_phase(RacePhase.LED_COUNTDOWN)
-        self._emit_status("준비: 부저 + RED LED 순차 점등")
-        self.hardware.buzz(0.2)
-        for i in range(3):
+        self._emit_status("준비: LED 순차 점등 (1→5)")
+        self.hardware.all_leds_off()
+        for i in range(5):
             if self._stop:
                 return
             self.hardware.sequential_led_on(i)
-            self.hardware.buzz(0.15)
-            if not self._sleep(0.45):
+            self.hardware.buzz(0.12)
+            self._emit_status(f"준비: LED {i + 1}/5 점등")
+            if not self._sleep(1.0):
                 return
 
-        # 2) 1~3초 후 부저 + 소등
+        # 2) 1~3초 랜덤 대기 후 소등 + 부저 = 출발신호
         hold = random.uniform(self.config.led_hold_min_s, self.config.led_hold_max_s)
         self._set_phase(RacePhase.LIGHTS_OFF)
-        self._emit_status(f"소등 대기 {hold:.1f}초")
+        self._emit_status(f"소등(출발) 대기 {hold:.1f}초 — 부정출발 감시")
         if not self._sleep(hold):
             return
-        self.hardware.buzz(0.3)
         self.hardware.all_leds_off()
-
-        # 3) 랜덤 1~3초 후 출발신호
-        delay = random.uniform(
-            self.config.start_delay_min_s, self.config.start_delay_max_s
-        )
-        self._set_phase(RacePhase.WAITING_START)
-        self._emit_status(f"출발신호 대기 {delay:.1f}초 (부정출발 감시)")
-        if not self._sleep(delay):
-            return
-
+        self.hardware.buzz(0.5)
         self.start_monotonic = time.monotonic()
         self._set_phase(RacePhase.RACING)
-        self.hardware.buzz(0.5)
-        if self.config.ultrasonic_enabled:
-            self._emit_status("출발! 가상결승선·초음파·카메라 계측 중")
-        else:
-            self._emit_status("출발! 가상결승선·카메라 계측 중 (초음파 OFF)")
+        self._emit_status("출발! 소등·부저 — 가상결승선·카메라 계측 중")
 
         # 경기 종료는 랩 완료 / 수동 종료로 처리
         while not self._stop and self.phase == RacePhase.RACING:
@@ -395,67 +370,9 @@ class RaceEngine:
         if self.phase == RacePhase.RACING:
             self._finish()
 
-    def _on_ultrasonic_pass(self, sensor_index: int, _distance: float) -> None:
-        if not self.config.ultrasonic_enabled:
-            return
-        now = time.monotonic()
-        phase = self.phase
-
-        # 부정출발: 출발신호 전 통과
-        if phase in (RacePhase.LED_COUNTDOWN, RacePhase.LIGHTS_OFF, RacePhase.WAITING_START):
-            self._apply_false_start_penalty(sensor_index)
-            return
-
-        if phase != RacePhase.RACING or self.start_monotonic is None:
-            return
-
-        elapsed_ms = (now - self.start_monotonic) * 1000.0
-        with self._lock:
-            # 기본: 센서 인덱스 = 레인(참가자) 인덱스
-            ordered = list(self.results.values())
-            target: Optional[RunnerResult] = None
-            if sensor_index < len(ordered):
-                target = ordered[sensor_index]
-
-            # ArUco 재매핑: 최근 2초 내 마커가 "하나뿐"일 때만 (다른 차 오기록 방지)
-            recent = [
-                (mid, ts)
-                for mid, ts in self._pending_markers.items()
-                if now - ts < 2.0
-            ]
-            if len(recent) == 1:
-                marker_id, _ = recent[0]
-                rc_id = self._marker_to_rc.get(marker_id)
-                if rc_id and rc_id in self.results:
-                    target = self.results[rc_id]
-                    self._pending_markers.pop(marker_id, None)
-
-            if target is None:
-                return
-            self._record_lap_locked(target, elapsed_ms, now, source="초음파")
-
-        self._publish_ranks()
-
     def _false_start_seconds_label(self) -> str:
         sec = self.config.false_start_penalty_ms / 1000.0
         return f"{sec:g}"
-
-    def _apply_false_start_penalty(self, sensor_index: int) -> None:
-        with self._lock:
-            # 해당 레인 센서 인덱스와 참가자 인덱스 대응 (0,1,2)
-            participants = list(self.results.values())
-            if sensor_index >= len(participants):
-                return
-            result = participants[sensor_index]
-            if result.false_start:
-                return
-            result.false_start = True
-            result.penalty_ms += self.config.false_start_penalty_ms
-            name = result.participant.name
-        self._emit_status(
-            f"부정출발: {name} +{self._false_start_seconds_label()}초 패널티"
-        )
-        self._publish_ranks()
 
     def on_marker_seen(self, marker_id: int) -> None:
         """카메라 ArUco 인식 → 참가자 대응."""
@@ -465,7 +382,6 @@ class RaceEngine:
         if not rc_id:
             return
         with self._lock:
-            self._pending_markers[marker_id] = time.monotonic()
             if rc_id not in self.results and len(self.results) < self.config.max_runners:
                 p = next((x for x in self.participants if x.rc_id == rc_id), None)
                 if p:
@@ -484,9 +400,9 @@ class RaceEngine:
         if self.phase in (
             RacePhase.LED_COUNTDOWN,
             RacePhase.LIGHTS_OFF,
-            RacePhase.WAITING_START,
         ):
-            # 부정출발: 마커 통과
+            # 부정출발: 소등(출발) 전에 결승선 통과
+
             rc_id = self._resolve_rc(marker_id)
             if not rc_id:
                 return
